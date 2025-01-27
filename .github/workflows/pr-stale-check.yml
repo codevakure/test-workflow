@@ -1,0 +1,113 @@
+name: PR Stale Check
+
+on:
+  schedule:
+    - cron: "0 0 * * *" # Runs daily at midnight
+  workflow_dispatch: # Allows manual triggering
+
+jobs:
+  check-stale-prs:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v2
+
+      - name: Install GitHub CLI
+        run: |
+          sudo apt-get update
+          sudo apt-get install gh -y
+
+      - name: Authenticate GitHub CLI
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo $GITHUB_TOKEN | gh auth login --with-token
+
+      - name: Fetch open PRs
+        id: fetch-prs
+        run: |
+          prs=$(gh pr list --state open --json number,title,createdAt,author --jq '.[] | select((now - (.createdAt | fromdateiso8601)) > 60) | {number, title, createdAt, author}')
+          echo "Fetched PRs: $prs"
+          echo "::set-output name=prs::$prs"
+
+      - name: Check if there are stale PRs
+        id: check-stale-prs
+        run: |
+          if [ -z "${{ steps.fetch-prs.outputs.prs }}" ]; then
+            echo "No stale PRs found."
+            exit 0
+          fi
+
+      - name: Notify leads if PRs are stale
+        if: steps.fetch-prs.outputs.prs != ''
+        uses: actions/github-script@v4
+        with:
+          script: |
+            const prs = JSON.parse(`{{ steps.fetch-prs.outputs.prs }}`);
+            const leads = ["@ViswaKartheek-Reddy_tcb", "@Daniel-Hogeland_tcb", "@Yakeen-Adhikari_tcb", "@Varun-Muppidi_tcb", "@RaghavaKrishna-Bhairwade1_tcb"];
+            let prDetails = "";
+
+            for (const pr of prs) {
+              const { data: comments } = await github.issues.listComments({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: pr.number
+              });
+
+              const { data: reviews } = await github.pulls.listReviews({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                pull_number: pr.number
+              });
+
+              const { data: commits } = await github.pulls.listCommits({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                pull_number: pr.number
+              });
+
+              const { data: checks } = await github.checks.listForRef({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                ref: pr.head.sha
+              });
+
+              const commentAuthors = [...new Set(comments.map(comment => comment.user.login))];
+              const approvedReviews = reviews.filter(review => review.state === "APPROVED").length;
+              const resolvedComments = comments.filter(comment => comment.resolved).length;
+              const failedChecks = checks.check_runs.filter(check => check.conclusion === "failure");
+
+              const createdAt = new Date(pr.createdAt);
+              const now = new Date();
+              const daysOpen = Math.floor((now - createdAt) / (1000 * 60 * 60 * 24));
+
+              prDetails += `
+                - PR #${pr.number} ${pr.title} (created at ${pr.createdAt})
+                  - Opened by: ${pr.author.login}
+                  - Total comments: ${comments.length}
+                  - Resolved comments: ${resolvedComments}
+                  - Approved reviews: ${approvedReviews}
+                  - Total commits: ${commits.length}
+                  - Commit dates: ${commits.map(commit => commit.commit.author.date).join(", ")}
+                  - Comment authors: ${commentAuthors.join(", ")}
+                  - Failed checks: ${failedChecks.map(check => `${check.name}: ${check.output.title}`).join(", ")}
+                  - Total days open: ${daysOpen} days
+              `;
+            }
+
+            const body = `
+              <h1>Stale Pull Requests</h1>
+              <p>The following pull requests have been open for more than 3 days:</p>
+              <ul>
+                ${prDetails}
+              </ul>
+              <p>Leads: ${leads.join(", ")}</p>
+            `;
+
+            await github.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body: body
+            });

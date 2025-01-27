@@ -1,0 +1,87 @@
+name: Branch and PR Title Check
+
+on:
+  pull_request:
+    types: [opened, edited, synchronize]
+
+jobs:
+  check-branch-and-pr-title:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v2
+
+      - name: Validate branch name
+        id: validate-branch
+        continue-on-error: true
+        run: |
+          EXCEPTION_BRANCHES=("develop" "test" "main" "test/" "develop/" "release/")
+          BRANCH_NAME="${{ github.event.pull_request.head.ref }}"
+          VALID_PREFIXES=("feature" "sprint" "us" "hotfix" "bug")
+          VALID_FORMAT="^(?i)(${VALID_PREFIXES[*]// /|})-AB#[0-9]+-[a-zA-Z0-9-]+$"
+
+          BRANCH_VALID=false
+
+          for EXCEPTION in "${EXCEPTION_BRANCHES[@]}"; do
+            if [[ "$BRANCH_NAME" == "$EXCEPTION"* ]]; then
+              echo "Branch name '$BRANCH_NAME' is an exception and does not need validation."
+              BRANCH_VALID=true
+              break
+            fi
+          done
+
+          if [[ "$BRANCH_VALID" == false && ! "$BRANCH_NAME" =~ $VALID_FORMAT ]]; then
+            echo "branch_valid=false" >> $GITHUB_OUTPUT
+            echo "::error::Branch name '$BRANCH_NAME' does not follow the required naming convention."
+            echo "::error::Format: {PREFIX}-AB#{NUMBER}-{NAME}"
+            echo "::error::Valid prefixes: feature, sprint, us, hotfix, bug"
+            echo "::error::Example: feature-AB#575859-credit-now-payments"
+          else
+            echo "branch_valid=true" >> $GITHUB_OUTPUT
+            echo "::notice::Branch name '$BRANCH_NAME' is valid."
+
+      - name: Validate PR title
+        id: validate-pr-title
+        continue-on-error: true
+        run: |
+          EXCEPTION_BRANCHES=("develop" "test" "main" "test/" "develop/" "release/")
+          PR_TITLE="${{ github.event.pull_request.title }}"
+          VALID_PREFIXES=("feature" "sprint" "us" "hotfix" "bug")
+          VALID_FORMAT="^(?i)(${VALID_PREFIXES[*]// /|})-AB#[0-9]+-[a-zA-Z0-9-]+$"
+
+          PR_TITLE_VALID=false
+
+          for EXCEPTION in "${EXCEPTION_BRANCHES[@]}"; do
+            if [[ "$PR_TITLE" == "$EXCEPTION"* ]]; then
+              echo "PR title '$PR_TITLE' is an exception and does not need validation."
+              PR_TITLE_VALID=true
+              break
+            fi
+          done
+
+          if [[ "$PR_TITLE_VALID" == false && ! "$PR_TITLE" =~ $VALID_FORMAT ]]; then
+            echo "pr_title_valid=false" >> $GITHUB_OUTPUT
+            echo "::error::PR title '$PR_TITLE' does not follow the required naming convention."
+            echo "::error::Format: {PREFIX}-AB#{NUMBER}-{NAME}"
+            echo "::error::Valid prefixes: feature, sprint, us, hotfix, bug"
+            echo "::error::Example: feature-AB#575859-credit-now-payments"
+          else
+            echo "pr_title_valid=true" >> $GITHUB_OUTPUT
+            echo "::notice::PR title '$PR_TITLE' is valid."
+
+      - name: Final validation
+        run: |
+          BRANCH_VALID=$(grep "branch_valid" $GITHUB_OUTPUT | cut -d '=' -f 2)
+          PR_TITLE_VALID=$(grep "pr_title_valid" $GITHUB_OUTPUT | cut -d '=' -f 2)
+
+          if [[ "$BRANCH_VALID" == "false" ]]; then
+            echo "::error::Branch name validation failed."
+          fi
+          if [[ "$PR_TITLE_VALID" == "false" ]]; then
+            echo "::error::PR title validation failed."
+          fi
+          if [[ "$BRANCH_VALID" == "true" && "$PR_TITLE_VALID" == "true" ]]; then
+            echo "::notice::Both branch name and PR title are valid."
+          else
+            exit 1
