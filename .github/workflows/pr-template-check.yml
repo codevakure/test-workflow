@@ -9,7 +9,6 @@ permissions:
   pull-requests: write
   contents: read
   issues: write
-  statuses: write
 
 jobs:
   check-pr-template:
@@ -27,7 +26,7 @@ jobs:
           # Initialize validation flags
           MISSING_FIELDS=()
           
-          # Check for required sections
+          # Check for required sections (Dependencies and Prerequisites is optional)
           REQUIRED_SECTIONS=(
             "Type of Change"
             "Current Behavior"
@@ -36,6 +35,7 @@ jobs:
             "UI Platform Standards Compliance"
             "Quality Assurance"
           )
+          # Note: Dependencies and Prerequisites section is optional and not included in validation
           
           for SECTION in "${REQUIRED_SECTIONS[@]}"; do
             if ! echo "$PR_BODY" | grep -q "$SECTION"; then

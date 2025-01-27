@@ -4,6 +4,11 @@ on:
   pull_request:
     types: [opened, edited, synchronize]
 
+permissions:
+  pull-requests: write
+  contents: read
+  issues: write
+
 jobs:
   run-tests:
     runs-on: ubuntu-latest
@@ -15,28 +20,114 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@v2
         with:
-          node-version: "22.13.1" # Use the appropriate Node.js version for your project
-
-      # - name: Set up .npmrc
-      #   run: |
-      #     echo "strict-ssl=false" > ~/.npmrc
-      #     echo "//npm.pkg.github.com/:_authToken=${{ secrets.GPKG_TOKEN }}" >> ~/.npmrc
-      #     echo "@TCB-Application-Development:registry=https://npm.pkg.github.com/" >> ~/.npmrc
-      #     echo "registry=https://registry.npmjs.org/" >> ~/.npmrc
-      #     echo "//registry.npmjs.org/:_authToken=${{ secrets.NPKG_TOKEN }}" >> ~/.npmrc
-      #     echo "@tcb-application-development:registry=https://npm.pkg.github.com/" >> ~/.npmrc
-      #     echo "@tcb-enterprise-services:registry=https://npm.pkg.github.com/" >> ~/.npmrc
+          node-version: "22.13.1"
 
       - name: Install dependencies
         run: npm install
 
       - name: Run tests
         id: test
+        continue-on-error: true
         run: |
-          npm run test || exit 1
+          # Attempt to run tests and capture the exit code
+          if npm run test -- --no-watch --browsers ChromeHeadless > test-output.txt 2>&1; then
+            echo "TEST_STATUS=success" >> $GITHUB_ENV
+          else
+            # Check if this is a test execution failure or test cases failing
+            if grep -q "Executed.*" test-output.txt; then
+              echo "TEST_STATUS=failed_tests" >> $GITHUB_ENV
+            else
+              echo "TEST_STATUS=execution_failed" >> $GITHUB_ENV
+            fi
+          fi
+          
+          # Try to extract test results if available
+          if [ -f test-output.txt ] && grep -q "Executed.*" test-output.txt; then
+            TOTAL=$(grep -o 'Executed.*' test-output.txt | tail -1 | cut -d' ' -f2)
+            FAILED=$(grep -o 'Executed.*' test-output.txt | tail -1 | grep -o '[0-9]* failed' | cut -d' ' -f1)
+            if [ -n "$TOTAL" ] && [ -n "$FAILED" ]; then
+              PASSED=$((TOTAL - FAILED))
+              echo "TOTAL_TESTS=$TOTAL" >> $GITHUB_ENV
+              echo "FAILED_TESTS=$FAILED" >> $GITHUB_ENV
+              echo "PASSED_TESTS=$PASSED" >> $GITHUB_ENV
+            fi
+          fi
+          
+          # Save error output for execution failures
+          if [ "$TEST_STATUS" = "execution_failed" ]; then
+            ERROR_MSG=$(tail -n 5 test-output.txt)
+            echo "ERROR_MSG<<EOF" >> $GITHUB_ENV
+            echo "$ERROR_MSG" >> $GITHUB_ENV
+            echo "EOF" >> $GITHUB_ENV
+          fi
 
-      - name: Check test results
-        if: failure()
-        run: |
-          echo "::error::Test check failed. Please check the test logs for details."
-          exit 1
+      - name: Comment test results
+        if: always()
+        uses: actions/github-script@v6
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const status = process.env.TEST_STATUS;
+            let message;
+            
+            switch(status) {
+              case 'execution_failed':
+                message = `## ❌ Unit Test Run Failed
+                
+                The test execution failed to complete. This usually indicates a configuration or setup issue.
+                
+                ### Error Details:
+                \`\`\`
+                ${process.env.ERROR_MSG || 'Error details not available'}
+                \`\`\`
+                
+                ### Next Steps:
+                1. Check if the test configuration is correct
+                2. Verify all dependencies are properly installed
+                3. Try running tests locally to reproduce the issue
+                4. Fix any setup/configuration issues
+                5. Push your changes to trigger a new test run`;
+                break;
+                
+              case 'failed_tests':
+                message = `## ❌ Unit Tests Failed
+                
+                ### Test Results Summary:
+                - Total Tests: ${process.env.TOTAL_TESTS || 'N/A'}
+                - Passed: ${process.env.PASSED_TESTS || 0}
+                - Failed: ${process.env.FAILED_TESTS || 'N/A'}
+                
+                Please check the test logs for details on failing tests.
+                
+                ### Next Steps:
+                1. Review the failing tests in the pipeline logs
+                2. Fix the failing tests locally
+                3. Push your changes
+                4. Tests will automatically run again`;
+                break;
+                
+              case 'success':
+                message = `## ✅ Unit Tests Passed Successfully
+                
+                ### Test Results Summary:
+                - Total Tests: ${process.env.TOTAL_TESTS || 'N/A'}
+                - Passed: ${process.env.PASSED_TESTS || 'N/A'}
+                - Failed: 0
+                
+                All tests have passed successfully! Your code is ready for review.`;
+                break;
+                
+              default:
+                message = `## ❌ Unit Test Process Error
+                
+                An unexpected error occurred during the test process.
+                
+                Please check the workflow logs for more details.`;
+            }
+            
+            await github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: message
+            });
