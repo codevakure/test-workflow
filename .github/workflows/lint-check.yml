@@ -39,7 +39,6 @@ jobs:
           if [ -s lint-output.txt ]; then
             # Check for Angular CLI lint output format
             if grep -q "All files pass linting" lint-output.txt; then
-              echo "status=success" >> $GITHUB_OUTPUT
               echo "message=All files pass linting" >> $GITHUB_OUTPUT
               echo "errors=0" >> $GITHUB_OUTPUT
               echo "warnings=0" >> $GITHUB_OUTPUT
@@ -49,21 +48,21 @@ jobs:
               WARNINGS=$(grep -c "warning" lint-output.txt || echo "0")
               TOTAL=$((ERRORS + WARNINGS))
               
-              if [ $TOTAL -gt 200 ]; then
-                echo "status=failure" >> $GITHUB_OUTPUT
-              else
-                echo "status=warning" >> $GITHUB_OUTPUT
-              fi
-              
               echo "errors=$ERRORS" >> $GITHUB_OUTPUT
               echo "warnings=$WARNINGS" >> $GITHUB_OUTPUT
               echo "message=Found $ERRORS errors and $WARNINGS warnings" >> $GITHUB_OUTPUT
+              
+              if [ $TOTAL -gt 200 ]; then
+                echo "status=failure" >> $GITHUB_OUTPUT
+              else
+                echo "status=success" >> $GITHUB_OUTPUT
+              fi
             fi
           else
-            echo "status=success" >> $GITHUB_OUTPUT
             echo "message=No lint issues found" >> $GITHUB_OUTPUT
             echo "errors=0" >> $GITHUB_OUTPUT
             echo "warnings=0" >> $GITHUB_OUTPUT
+            echo "status=success" >> $GITHUB_OUTPUT
           fi
 
       - name: Post lint results comment
@@ -71,35 +70,30 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           # Read the lint results
-          STATUS="${{ steps.lint.outputs.status }}"
           MESSAGE="${{ steps.lint.outputs.message }}"
           ERRORS="${{ steps.lint.outputs.errors }}"
           WARNINGS="${{ steps.lint.outputs.warnings }}"
+          TOTAL=$((ERRORS + WARNINGS))
           
-          # Prepare the comment
-          if [ "$STATUS" = "success" ]; then
-            ICON="✅"
-            HEADER="## Lint Check Passed"
-          elif [ "$STATUS" = "warning" ]; then
-            ICON="⚠️"
-            HEADER="## Lint Check Warning"
+          if [ $TOTAL -eq 0 ]; then
+            COMMENT="## ✅ Lint Check Passed\n\n"
+            COMMENT+="No lint issues found."
           else
-            ICON="❌"
-            HEADER="## Lint Check Failed"
-          fi
-          
-          COMMENT="$HEADER\n\n"
-          COMMENT+="$ICON $MESSAGE\n\n"
-          
-          if [ "$ERRORS" != "0" ] || [ "$WARNINGS" != "0" ]; then
+            if [ $TOTAL -gt 200 ]; then
+              COMMENT="## ❌ Lint Check Failed\n\n"
+            else
+              COMMENT="## ⚠️ Lint Check Warning\n\n"
+            fi
+            
+            COMMENT+="$MESSAGE\n\n"
             COMMENT+="### Summary:\n"
             COMMENT+="- Errors: $ERRORS\n"
             COMMENT+="- Warnings: $WARNINGS\n"
-            COMMENT+="- Total Issues: $((ERRORS + WARNINGS))\n\n"
+            COMMENT+="- Total Issues: $TOTAL\n\n"
             
-            if [ "$STATUS" = "failure" ]; then
+            if [ $TOTAL -gt 200 ]; then
               COMMENT+="❗ The total number of issues exceeds the maximum limit of 200.\n"
-              COMMENT+="Please fix the issues before merging.\n"
+              COMMENT+="Please reduce the number of issues before merging."
             fi
           fi
           
@@ -108,5 +102,5 @@ jobs:
       - name: Check final status
         if: steps.lint.outputs.status == 'failure'
         run: |
-          echo "::error::Lint check failed. Total issues exceed maximum limit of 200."
+          echo "::error::Total number of lint issues (${TOTAL}) exceeds the maximum limit of 200."
           exit 1
