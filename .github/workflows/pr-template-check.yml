@@ -9,27 +9,96 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Check out the repository
+      - name: Check out repository
         uses: actions/checkout@v2
 
       - name: Validate PR description
         id: validate
         run: |
-          REQUIRED_FIELDS=("Does this PR introduce a breaking change?" "Is the UI build tested locally and working?" "Have the unit tests been run locally and are they passing?" "Did the PR created according to the UI Platform Standards?" "What changes does this PR include" "Count of eslint issues")
+          PR_BODY=$(jq -r .pull_request.body "$GITHUB_EVENT_PATH")
+          
+          # Initialize validation flags
+          VALIDATION_FAILED=false
           MISSING_FIELDS=()
-          for FIELD in "${REQUIRED_FIELDS[@]}"; do
-            if ! grep -q "$FIELD" "$GITHUB_EVENT_PATH"; then
-              MISSING_FIELDS+=("$FIELD")
+          
+          # Check for required sections
+          REQUIRED_SECTIONS=(
+            "Type of Change"
+            "Current Behavior"
+            "New Behavior"
+            "Breaking Changes"
+            "UI Platform Standards Compliance"
+            "Quality Assurance"
+          )
+          
+          for SECTION in "${REQUIRED_SECTIONS[@]}"; do
+            if ! echo "$PR_BODY" | grep -q "$SECTION"; then
+              MISSING_FIELDS+=("$SECTION")
+              VALIDATION_FAILED=true
             fi
           done
-          if [ ${#MISSING_FIELDS[@]} -ne 0 ]; then
-            echo "Missing fields: ${MISSING_FIELDS[@]}"
-            echo "missing_fields=${MISSING_FIELDS[@]}" >> $GITHUB_OUTPUT
+          
+          # Check if at least one checkbox is checked in required sections
+          TYPE_CHECKED=$(echo "$PR_BODY" | grep -c '\- \[x\]' || true)
+          if [ "$TYPE_CHECKED" -eq 0 ]; then
+            MISSING_FIELDS+=("At least one change type must be selected")
+            VALIDATION_FAILED=true
+          fi
+          
+          # Check Breaking Changes selection
+          if ! echo "$PR_BODY" | grep -q '\- \[x\] \(Yes\|No\) *$'; then
+            MISSING_FIELDS+=("Breaking Changes selection required")
+            VALIDATION_FAILED=true
+          fi
+          
+          # Check UI Platform Standards compliance
+          if ! echo "$PR_BODY" | grep -q '\- \[x\] \(Yes\|No\) *$'; then
+            MISSING_FIELDS+=("UI Platform Standards compliance selection required")
+            VALIDATION_FAILED=true
+          fi
+          
+          # Check Quality Assurance section
+          QA_CHECKED=$(echo "$PR_BODY" | grep -c '\- \[x\]' || true)
+          if [ "$QA_CHECKED" -eq 0 ]; then
+            MISSING_FIELDS+=("Quality Assurance checkboxes must be completed")
+            VALIDATION_FAILED=true
+          fi
+          
+          # Output results
+          if [ "$VALIDATION_FAILED" = true ]; then
+            echo "::error::PR template validation failed. Missing or incomplete fields:"
+            printf '%s\n' "${MISSING_FIELDS[@]}"
             exit 1
-          else
-            echo "missing_fields=none" >> $GITHUB_OUTPUT
+          fi
+          
+          echo "PR template validation passed"
 
-      - name: Output missing fields
-        if: steps.validate.outputs.missing_fields != 'none'
-        run: |
-          echo "::error::PR template validation failed. Missing required fields: ${{ steps.validate.outputs.missing_fields }}"
+      - name: Comment on PR
+        if: failure()
+        uses: actions/github-script@v6
+        with:
+          script: |
+            const missingFields = process.env.MISSING_FIELDS.split(',');
+            
+            const errorMessage = `## ❌ PR Template Validation Failed
+            
+            This pull request does not follow the required template. Please update the PR description to include the following missing or incomplete sections:
+            
+            ${missingFields.map(field => `- ${field}`).join('\n')}
+            
+            Please edit your PR description to include all required information. This helps reviewers better understand your changes.
+            
+            ### Required Actions:
+            1. Click the "Edit" button on your PR
+            2. Fill in all missing sections
+            3. Ensure all appropriate checkboxes are checked
+            4. Save your changes
+            
+            The PR validation will automatically run again after you make your changes.`;
+            
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: errorMessage
+            });
