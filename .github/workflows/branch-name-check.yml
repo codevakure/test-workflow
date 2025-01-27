@@ -26,7 +26,6 @@ jobs:
           VALID_FORMAT="^($PREFIX_PATTERN)-AB#[0-9]+-[a-zA-Z0-9][a-zA-Z0-9-]*$"
 
           BRANCH_VALID=false
-          ERROR_MESSAGE=""
 
           # Check for exception branches
           for EXCEPTION in "${EXCEPTION_BRANCHES[@]}"; do
@@ -39,14 +38,18 @@ jobs:
 
           if [[ "$BRANCH_VALID" == false ]]; then
             if [[ ! "$BRANCH_NAME_LOWER" =~ $VALID_FORMAT ]]; then
-              ERROR_MESSAGE="Branch name '$BRANCH_NAME' does not follow the required format:
-              - Must start with one of: ${VALID_PREFIXES[*]} (case insensitive)
-              - Must include AB# followed by numbers
-              - Must have a descriptive name after the ticket number
-              Example: feature-AB#123456-add-payment-integration"
-              echo "::error::$ERROR_MESSAGE"
+              # Using GitHub Actions multiline output syntax
               echo "branch_valid=false" >> $GITHUB_OUTPUT
-              echo "branch_error=$ERROR_MESSAGE" >> $GITHUB_OUTPUT
+              {
+                echo "branch_error<<EOF"
+                echo "Branch name '$BRANCH_NAME' does not follow the required format:"
+                echo "- Must start with one of: ${VALID_PREFIXES[*]} (case insensitive)"
+                echo "- Must include AB# followed by numbers"
+                echo "- Must have a descriptive name after the ticket number"
+                echo "Example: feature-AB#123456-add-payment-integration"
+                echo "EOF"
+              } >> $GITHUB_OUTPUT
+              echo "::error::Branch name validation failed. Check the PR comment for details."
             else
               echo "branch_valid=true" >> $GITHUB_OUTPUT
               echo "::notice::Branch name '$BRANCH_NAME' is valid."
@@ -69,7 +72,6 @@ jobs:
           VALID_FORMAT="^($PREFIX_PATTERN)-AB#[0-9]+-[a-zA-Z0-9][a-zA-Z0-9-]*$"
 
           PR_TITLE_VALID=false
-          ERROR_MESSAGE=""
 
           # Check for exception prefixes
           for EXCEPTION in "${EXCEPTION_PREFIXES[@]}"; do
@@ -82,14 +84,18 @@ jobs:
 
           if [[ "$PR_TITLE_VALID" == false ]]; then
             if [[ ! "$PR_TITLE_LOWER" =~ $VALID_FORMAT ]]; then
-              ERROR_MESSAGE="PR title '$PR_TITLE' does not follow the required format:
-              - Must start with one of: ${VALID_PREFIXES[*]} (case insensitive)
-              - Must include AB# followed by numbers
-              - Must have a descriptive name after the ticket number
-              Example: feature-AB#123456-add-payment-integration"
-              echo "::error::$ERROR_MESSAGE"
+              # Using GitHub Actions multiline output syntax
               echo "pr_title_valid=false" >> $GITHUB_OUTPUT
-              echo "pr_title_error=$ERROR_MESSAGE" >> $GITHUB_OUTPUT
+              {
+                echo "pr_title_error<<EOF"
+                echo "PR title '$PR_TITLE' does not follow the required format:"
+                echo "- Must start with one of: ${VALID_PREFIXES[*]} (case insensitive)"
+                echo "- Must include AB# followed by numbers"
+                echo "- Must have a descriptive name after the ticket number"
+                echo "Example: feature-AB#123456-add-payment-integration"
+                echo "EOF"
+              } >> $GITHUB_OUTPUT
+              echo "::error::PR title validation failed. Check the PR comment for details."
             else
               echo "pr_title_valid=true" >> $GITHUB_OUTPUT
               echo "::notice::PR title '$PR_TITLE' is valid."
@@ -108,13 +114,14 @@ jobs:
             
             let comment = '## Branch and PR Title Validation Results\n\n';
             
-            // Extract validation results and error messages
+            // Extract validation results
             const branchValid = githubOutput.includes('branch_valid=true');
             const prTitleValid = githubOutput.includes('pr_title_valid=true');
             
-            // Function to extract error message
-            const getError = (prefix) => {
-              const match = githubOutput.match(new RegExp(`${prefix}_error=(.+?)(?=\\n|$)`, 's'));
+            // Function to extract error message between EOF delimiters
+            const getError = (content, prefix) => {
+              const regex = new RegExp(`${prefix}_error<<EOF\\n([\\s\\S]*?)\\nEOF`);
+              const match = content.match(regex);
               return match ? match[1] : '';
             };
             
@@ -123,7 +130,8 @@ jobs:
             if (branchValid) {
               comment += '✅ Branch name is valid\n\n';
             } else {
-              comment += `❌ Branch name is invalid\n${getError('branch')}\n\n`;
+              const branchError = getError(githubOutput, 'branch');
+              comment += `❌ Branch name is invalid\n\`\`\`\n${branchError}\n\`\`\`\n\n`;
             }
             
             // PR title validation results
@@ -131,7 +139,8 @@ jobs:
             if (prTitleValid) {
               comment += '✅ PR title is valid\n\n';
             } else {
-              comment += `❌ PR title is invalid\n${getError('pr_title')}\n\n`;
+              const prTitleError = getError(githubOutput, 'pr_title');
+              comment += `❌ PR title is invalid\n\`\`\`\n${prTitleError}\n\`\`\`\n\n`;
             }
             
             // Add the comment to the PR
