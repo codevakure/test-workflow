@@ -27,16 +27,13 @@ jobs:
 
       - name: Validate branch name
         id: validate-branch
-        shell: bash
         run: |
           EXCEPTION_BRANCHES=("develop" "test" "main" "test/" "develop/" "release/")
           BRANCH_NAME="${{ github.event.pull_request.head.ref }}"
           VALID_PREFIXES=("feature" "sprint" "us" "hotfix" "bug")
-          
-          # Make validation case-insensitive
           BRANCH_NAME_LOWER=$(echo "$BRANCH_NAME" | tr '[:upper:]' '[:lower:]')
+          PREFIX_MATCHES=false
           
-          # Check for exception branches first
           for EXCEPTION in "${EXCEPTION_BRANCHES[@]}"; do
             if [[ "$BRANCH_NAME" == "$EXCEPTION"* ]]; then
               echo "BRANCH_VALID=true" > status.txt
@@ -46,8 +43,6 @@ jobs:
             fi
           done
           
-          # Check if prefix matches (case-insensitive)
-          PREFIX_MATCHES=false
           for PREFIX in "${VALID_PREFIXES[@]}"; do
             PREFIX_LOWER=$(echo "$PREFIX" | tr '[:upper:]' '[:lower:]')
             if [[ "$BRANCH_NAME_LOWER" =~ ^"$PREFIX_LOWER"-ab#[0-9]+-[a-z0-9][a-z0-9-]*$ ]]; then
@@ -61,33 +56,21 @@ jobs:
             echo "BRANCH_ERROR=''" >> status.txt
             echo "Branch name '$BRANCH_NAME' is valid."
           else
-            ERROR_MSG="Branch name '$BRANCH_NAME' does not follow the required format:
-- Must start with one of: ${VALID_PREFIXES[*]} (case insensitive)
-- Must include AB# followed by numbers
-- Must have a descriptive name after the ticket number
-
-Example valid names:
-- feature-AB#123456-add-payment-integration
-- us-AB#78901-update-user-profile
-- hotfix-AB#23456-fix-login-issue"
-            
+            ERROR_MSG="Branch name '$BRANCH_NAME' does not follow the required format. Must start with one of: ${VALID_PREFIXES[*]} (case insensitive), include AB# followed by numbers, and have a descriptive name. Example: feature-AB#123456-add-payment-integration"
             echo "BRANCH_VALID=false" > status.txt
-            echo "BRANCH_ERROR='$ERROR_MSG'" >> status.txt
+            echo "BRANCH_ERROR=$ERROR_MSG" >> status.txt
             echo "::error::Invalid branch name. Check PR comments for details."
           fi
 
       - name: Validate PR title
         id: validate-pr-title
-        shell: bash
         run: |
           EXCEPTION_PREFIXES=("develop" "test" "main" "test/" "develop/" "release/")
           PR_TITLE="${{ github.event.pull_request.title }}"
           VALID_PREFIXES=("feature" "sprint" "us" "hotfix" "bug")
-          
-          # Make validation case-insensitive
           PR_TITLE_LOWER=$(echo "$PR_TITLE" | tr '[:upper:]' '[:lower:]')
+          PREFIX_MATCHES=false
           
-          # Check for exception prefixes first
           for EXCEPTION in "${EXCEPTION_PREFIXES[@]}"; do
             if [[ "$PR_TITLE" == "$EXCEPTION"* ]]; then
               echo "PR_TITLE_VALID=true" >> status.txt
@@ -97,8 +80,6 @@ Example valid names:
             fi
           done
           
-          # Check if prefix matches (case-insensitive)
-          PREFIX_MATCHES=false
           for PREFIX in "${VALID_PREFIXES[@]}"; do
             PREFIX_LOWER=$(echo "$PREFIX" | tr '[:upper:]' '[:lower:]')
             if [[ "$PR_TITLE_LOWER" =~ ^"$PREFIX_LOWER"-ab#[0-9]+-[a-z0-9][a-z0-9-]*$ ]]; then
@@ -112,18 +93,9 @@ Example valid names:
             echo "PR_TITLE_ERROR=''" >> status.txt
             echo "PR title '$PR_TITLE' is valid."
           else
-            ERROR_MSG="PR title '$PR_TITLE' does not follow the required format:
-- Must start with one of: ${VALID_PREFIXES[*]} (case insensitive)
-- Must include AB# followed by numbers
-- Must have a descriptive name after the ticket number
-
-Example valid titles:
-- feature-AB#123456-add-payment-integration
-- us-AB#78901-update-user-profile
-- hotfix-AB#23456-fix-login-issue"
-            
+            ERROR_MSG="PR title '$PR_TITLE' does not follow the required format. Must start with one of: ${VALID_PREFIXES[*]} (case insensitive), include AB# followed by numbers, and have a descriptive name. Example: feature-AB#123456-add-payment-integration"
             echo "PR_TITLE_VALID=false" >> status.txt
-            echo "PR_TITLE_ERROR='$ERROR_MSG'" >> status.txt
+            echo "PR_TITLE_ERROR=$ERROR_MSG" >> status.txt
             echo "::error::Invalid PR title. Check PR comments for details."
           fi
 
@@ -133,31 +105,35 @@ Example valid titles:
           GH_TOKEN: ${{ github.token }}
         run: |
           source status.txt
-          
-          # Only post comment if there are validation errors
           if [ "$BRANCH_VALID" = "false" ] || [ "$PR_TITLE_VALID" = "false" ]; then
-            COMMENT="## ❌ Validation Failed\n\n"
+            COMMENT=""
+            COMMENT+="## ❌ Validation Failed\n\n"
             
             if [ "$BRANCH_VALID" = "false" ]; then
-              COMMENT+="### Branch Name Error\n\n"
+              COMMENT+="### Branch Name Error\n"
               COMMENT+="$BRANCH_ERROR\n\n"
+              COMMENT+="Valid examples:\n"
+              COMMENT+="- feature-AB#123456-add-payment-integration\n"
+              COMMENT+="- us-AB#78901-update-user-profile\n"
+              COMMENT+="- hotfix-AB#23456-fix-login-issue\n\n"
             fi
             
             if [ "$PR_TITLE_VALID" = "false" ]; then
-              COMMENT+="### PR Title Error\n\n"
+              COMMENT+="### PR Title Error\n"
               COMMENT+="$PR_TITLE_ERROR\n\n"
+              COMMENT+="Valid examples:\n"
+              COMMENT+="- feature-AB#123456-add-payment-integration\n"
+              COMMENT+="- us-AB#78901-update-user-profile\n"
+              COMMENT+="- hotfix-AB#23456-fix-login-issue\n"
             fi
             
-            # Post comment using gh cli
             echo -e "$COMMENT" | gh pr comment ${{ github.event.pull_request.number }} --body-file -
           fi
 
       - name: Block PR if validation failed
         if: always()
-        shell: bash
         run: |
           source status.txt
-          
           if [ "$BRANCH_VALID" != "true" ] || [ "$PR_TITLE_VALID" != "true" ]; then
             echo "::error::Validation failed. Please fix the branch name and/or PR title according to the guidelines in the PR comments."
             exit 1
