@@ -4,6 +4,13 @@ on:
   pull_request:
     types: [opened, edited, synchronize]
 
+# Add permissions block to allow commenting on PRs
+permissions:
+  pull-requests: write
+  contents: read
+  issues: write
+  statuses: write
+
 jobs:
   check-pr-template:
     runs-on: ubuntu-latest
@@ -76,6 +83,7 @@ jobs:
         if: failure()
         uses: actions/github-script@v6
         with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
             const missingFields = process.env.MISSING_FIELDS.split('\n').filter(Boolean);
             
