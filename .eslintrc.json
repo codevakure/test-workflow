@@ -13,7 +13,10 @@
         "plugin:@angular-eslint/template/process-inline-templates"
       ],
       "rules": {
-        "@angular-eslint/prefer-standalone": "off",
+        "@angular-eslint/prefer-standalone": "error", // Changed from "off" to "error"
+        "no-console": "error", // Add this to catch console.log
+        "@angular-eslint/no-empty-lifecycle-method": "error", // Add this to catch empty constructor
+        "@angular-eslint/use-lifecycle-interface": "error", // Add this for lifecycle methods
         "@angular-eslint/component-class-suffix": [
           "error",
           {
