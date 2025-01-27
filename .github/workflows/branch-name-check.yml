@@ -13,17 +13,13 @@ permissions:
 jobs:
   check-branch-and-pr-title:
     runs-on: ubuntu-latest
+    env:
+      BRANCH_VALID: "false"
+      PR_TITLE_VALID: "false"
 
     steps:
       - name: Check out the repository
         uses: actions/checkout@v3
-
-      - name: Create status file
-        run: |
-          echo "BRANCH_VALID=false" > status.txt
-          echo "PR_TITLE_VALID=false" >> status.txt
-          echo "BRANCH_ERROR=''" >> status.txt
-          echo "PR_TITLE_ERROR=''" >> status.txt
 
       - name: Validate branch name
         id: validate-branch
@@ -36,8 +32,7 @@ jobs:
           
           for EXCEPTION in "${EXCEPTION_BRANCHES[@]}"; do
             if [[ "$BRANCH_NAME" == "$EXCEPTION"* ]]; then
-              echo "BRANCH_VALID=true" > status.txt
-              echo "BRANCH_ERROR=''" >> status.txt
+              echo "BRANCH_VALID=true" >> $GITHUB_ENV
               echo "Branch name '$BRANCH_NAME' is an exception and is valid."
               exit 0
             fi
@@ -52,13 +47,10 @@ jobs:
           done
           
           if [ "$PREFIX_MATCHES" = true ]; then
-            echo "BRANCH_VALID=true" > status.txt
-            echo "BRANCH_ERROR=''" >> status.txt
+            echo "BRANCH_VALID=true" >> $GITHUB_ENV
             echo "Branch name '$BRANCH_NAME' is valid."
           else
-            ERROR_MSG="Branch name '$BRANCH_NAME' does not follow the required format. Must start with one of: ${VALID_PREFIXES[*]} (case insensitive), include AB# followed by numbers, and have a descriptive name. Example: feature-AB#123456-add-payment-integration"
-            echo "BRANCH_VALID=false" > status.txt
-            echo "BRANCH_ERROR=$ERROR_MSG" >> status.txt
+            echo "BRANCH_VALID=false" >> $GITHUB_ENV
             echo "::error::Invalid branch name. Check PR comments for details."
           fi
 
@@ -73,8 +65,7 @@ jobs:
           
           for EXCEPTION in "${EXCEPTION_PREFIXES[@]}"; do
             if [[ "$PR_TITLE" == "$EXCEPTION"* ]]; then
-              echo "PR_TITLE_VALID=true" >> status.txt
-              echo "PR_TITLE_ERROR=''" >> status.txt
+              echo "PR_TITLE_VALID=true" >> $GITHUB_ENV
               echo "PR title '$PR_TITLE' is an exception and is valid."
               exit 0
             fi
@@ -89,52 +80,52 @@ jobs:
           done
           
           if [ "$PREFIX_MATCHES" = true ]; then
-            echo "PR_TITLE_VALID=true" >> status.txt
-            echo "PR_TITLE_ERROR=''" >> status.txt
+            echo "PR_TITLE_VALID=true" >> $GITHUB_ENV
             echo "PR title '$PR_TITLE' is valid."
           else
-            ERROR_MSG="PR title '$PR_TITLE' does not follow the required format. Must start with one of: ${VALID_PREFIXES[*]} (case insensitive), include AB# followed by numbers, and have a descriptive name. Example: feature-AB#123456-add-payment-integration"
-            echo "PR_TITLE_VALID=false" >> status.txt
-            echo "PR_TITLE_ERROR=$ERROR_MSG" >> status.txt
+            echo "PR_TITLE_VALID=false" >> $GITHUB_ENV
             echo "::error::Invalid PR title. Check PR comments for details."
           fi
 
       - name: Post comment if validation failed
-        if: always()
+        if: env.BRANCH_VALID == 'false' || env.PR_TITLE_VALID == 'false'
         env:
           GH_TOKEN: ${{ github.token }}
+          BRANCH_NAME: ${{ github.event.pull_request.head.ref }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
         run: |
-          source status.txt
-          if [ "$BRANCH_VALID" = "false" ] || [ "$PR_TITLE_VALID" = "false" ]; then
-            COMMENT=""
-            COMMENT+="## ❌ Validation Failed\n\n"
-            
-            if [ "$BRANCH_VALID" = "false" ]; then
-              COMMENT+="### Branch Name Error\n"
-              COMMENT+="$BRANCH_ERROR\n\n"
-              COMMENT+="Valid examples:\n"
-              COMMENT+="- feature-AB#123456-add-payment-integration\n"
-              COMMENT+="- us-AB#78901-update-user-profile\n"
-              COMMENT+="- hotfix-AB#23456-fix-login-issue\n\n"
-            fi
-            
-            if [ "$PR_TITLE_VALID" = "false" ]; then
-              COMMENT+="### PR Title Error\n"
-              COMMENT+="$PR_TITLE_ERROR\n\n"
-              COMMENT+="Valid examples:\n"
-              COMMENT+="- feature-AB#123456-add-payment-integration\n"
-              COMMENT+="- us-AB#78901-update-user-profile\n"
-              COMMENT+="- hotfix-AB#23456-fix-login-issue\n"
-            fi
-            
-            echo -e "$COMMENT" | gh pr comment ${{ github.event.pull_request.number }} --body-file -
+          COMMENT="## ❌ Validation Failed\n\n"
+          
+          if [ "$BRANCH_VALID" = "false" ]; then
+            COMMENT+="### Branch Name Error\n"
+            COMMENT+="Branch name '${BRANCH_NAME}' does not follow the required format.\n\n"
+            COMMENT+="Required format:\n"
+            COMMENT+="- Must start with: feature, sprint, us, hotfix, or bug (case insensitive)\n"
+            COMMENT+="- Must include AB# followed by numbers\n"
+            COMMENT+="- Must have a descriptive name\n\n"
+            COMMENT+="Valid examples:\n"
+            COMMENT+="- feature-AB#123456-add-payment-integration\n"
+            COMMENT+="- us-AB#78901-update-user-profile\n"
+            COMMENT+="- hotfix-AB#23456-fix-login-issue\n\n"
           fi
+          
+          if [ "$PR_TITLE_VALID" = "false" ]; then
+            COMMENT+="### PR Title Error\n"
+            COMMENT+="PR title '${PR_TITLE}' does not follow the required format.\n\n"
+            COMMENT+="Required format:\n"
+            COMMENT+="- Must start with: feature, sprint, us, hotfix, or bug (case insensitive)\n"
+            COMMENT+="- Must include AB# followed by numbers\n"
+            COMMENT+="- Must have a descriptive name\n\n"
+            COMMENT+="Valid examples:\n"
+            COMMENT+="- feature-AB#123456-add-payment-integration\n"
+            COMMENT+="- us-AB#78901-update-user-profile\n"
+            COMMENT+="- hotfix-AB#23456-fix-login-issue\n"
+          fi
+          
+          echo -e "$COMMENT" | gh pr comment ${{ github.event.pull_request.number }} --body-file -
 
       - name: Block PR if validation failed
-        if: always()
+        if: env.BRANCH_VALID == 'false' || env.PR_TITLE_VALID == 'false'
         run: |
-          source status.txt
-          if [ "$BRANCH_VALID" != "true" ] || [ "$PR_TITLE_VALID" != "true" ]; then
-            echo "::error::Validation failed. Please fix the branch name and/or PR title according to the guidelines in the PR comments."
-            exit 1
-          fi
+          echo "::error::Validation failed. Please fix the branch name and/or PR title according to the guidelines in the PR comments."
+          exit 1
