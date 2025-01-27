@@ -19,7 +19,7 @@ jobs:
           EXCEPTION_BRANCHES=("develop" "test" "main" "test/" "develop/" "release/")
           BRANCH_NAME="${{ github.event.pull_request.head.ref }}"
           BRANCH_NAME_LOWER=$(echo "$BRANCH_NAME" | tr '[:upper:]' '[:lower:]')
-          VALID_PREFIXES=("feature" "sprint" "us" "hotfix" "bug")
+          VALID_PREFIXES=("feature" "sprint" "us" "hotfix" "bug" "FEATURE" "US" "SPRINT" "HOTFIX" "BUG")
           
           # Convert array to regex alternation
           PREFIX_PATTERN=$(IFS=\|; echo "${VALID_PREFIXES[*]}")
@@ -62,7 +62,7 @@ jobs:
           EXCEPTION_PREFIXES=("develop" "test" "main" "test/" "develop/" "release/")
           PR_TITLE="${{ github.event.pull_request.title }}"
           PR_TITLE_LOWER=$(echo "$PR_TITLE" | tr '[:upper:]' '[:lower:]')
-          VALID_PREFIXES=("feature" "sprint" "us" "hotfix" "bug")
+          VALID_PREFIXES=("feature" "sprint" "us" "hotfix" "bug" "FEATURE" "US" "SPRINT" "HOTFIX" "BUG")
           
           # Convert array to regex alternation
           PREFIX_PATTERN=$(IFS=\|; echo "${VALID_PREFIXES[*]}")
