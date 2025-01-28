@@ -83,17 +83,12 @@ jobs:
               }
             }
 
-            async function checkTypeScriptFile(file, content, lines) {
-              // Your existing TypeScript checks here...
-            }
-
             async function checkHtmlFile(file, content, lines) {
               // Check for repeated string literals in *ngIf
               const stringLiteralsMap = new Map();
 
               lines.forEach((line, index) => {
                 if (line.includes('*ngIf')) {
-                  // Match strings in quotes after equality operators
                   const stringPattern = /[=!]=\s*['"]([^'"]+)['"]/g;
                   let match;
                   while ((match = stringPattern.exec(line)) !== null) {
@@ -129,6 +124,30 @@ jobs:
                 }
               }
 
+              // Check for responsive design patterns
+              const responsiveLines = lines
+                .map((line, index) => ({ line, index: index + 1 }))
+                .filter(({ line }) => {
+                  if (line.trim().startsWith('<!--')) return false;
+                  return line.includes('ion-col') && 
+                         (line.includes('size="') || line.includes('size=\''));
+                });
+
+              for (const { index, line } of responsiveLines) {
+                await createComment(file, index, 'recommended', 'Responsive Design',
+                  `Hardcoded ion-col size detected. For better responsive design:\n\n` +
+                  `\`\`\`html\n` +
+                  `<ion-col \n` +
+                  `  size="12"\n` +
+                  `  size-sm="6"\n` +
+                  `  size-md="4"\n` +
+                  `  size-lg="3"\n` +
+                  `>\n` +
+                  `</ion-col>\n` +
+                  `\`\`\``
+                );
+              }
+
               // Check performance issues in templates
               const ngForLines = lines
                 .map((line, index) => ({ line, index: index + 1 }))
@@ -148,7 +167,6 @@ jobs:
               // Check accessibility issues
               for (let i = 0; i < lines.length; i++) {
                 const line = lines[i];
-                // Ignore comments
                 if (line.trim().startsWith('<!--')) continue;
 
                 if (line.includes('<img') && !line.includes('alt=')) {
@@ -184,10 +202,6 @@ jobs:
               }
             }
 
-            async function checkStyleFile(file, content, lines) {
-              // Your existing style checks here...
-            }
-
             // Process files
             for (const file of files) {
               try {
@@ -198,15 +212,8 @@ jobs:
                 const extension = file.filename.split('.').pop().toLowerCase();
 
                 switch (extension) {
-                  case 'ts':
-                    await checkTypeScriptFile(file, content, lines);
-                    break;
                   case 'html':
                     await checkHtmlFile(file, content, lines);
-                    break;
-                  case 'scss':
-                  case 'css':
-                    await checkStyleFile(file, content, lines);
                     break;
                 }
               } catch (error) {
@@ -214,6 +221,7 @@ jobs:
               }
             }
             
+              
       - name: Verify Changes and Auto-resolve Comments
         if: github.event.action == 'synchronize' || github.event.action == 'opened'
         uses: actions/github-script@v7
