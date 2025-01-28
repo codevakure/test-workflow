@@ -83,324 +83,74 @@ jobs:
               }
             }
 
-            async function checkTypeScriptFile(file, content, lines) {
-              // Check for memory leaks in subscriptions
-              const subscribeLines = lines
-                .map((line, index) => ({ line, index: index + 1 }))
-                .filter(({ line }) => {
-                  // Only match actual subscribe calls, not comments or strings
-                  const isComment = line.trim().startsWith('//') || line.trim().startsWith('/*');
-                  const isActualSubscribe = /\.subscribe\s*\(/.test(line);
-                  return !isComment && isActualSubscribe;
-                });
-
-              for (const { line, index } of subscribeLines) {
-                // Check for proper subscription management in the component
-                const relevantContent = content.split('\n')
-                  .slice(Math.max(0, index - 10), index + 10)
-                  .join('\n'); // Look at surrounding context
-
-                const hasUnsubscribe = 
-                  // Check for takeUntil pattern
-                  /\.pipe\s*\(\s*takeUntil\s*\(/.test(relevantContent) ||
-                  // Check for async pipe in corresponding template
-                  /\|\s*async/.test(content) ||
-                  // Check for proper unsubscribe in ngOnDestroy
-                  /ngOnDestroy\s*\(\s*\)\s*{[^}]*this\.[^.]+\.unsubscribe\s*\(\s*\)/.test(content);
-                
-                if (!hasUnsubscribe) {
-                  await createComment(file, index, 'critical', 'Memory Leak Risk',
-                    `This subscription at ${file.filename}:${index} lacks proper cleanup.\n\n` +
-                    `Memory leaks occur when subscriptions remain active after component destruction. You should:\n\n` +
-                    `1. Use \`.pipe(takeUntil(this.destroy$))\` pattern:\n` +
-                    `\`\`\`typescript\n` +
-                    `private destroy$ = new Subject<void>();\n\n` +
-                    `this.someService.getData().pipe(\n` +
-                    `  takeUntil(this.destroy$)\n` +
-                    `).subscribe(data => { ... });\n` +
-                    `\`\`\`\n\n` +
-                    `2. OR use the async pipe in template:\n` +
-                    `\`\`\`html\n` +
-                    `<div>{{ data$ | async }}</div>\n` +
-                    `\`\`\`\n\n` +
-                    `3. OR manually unsubscribe in ngOnDestroy:\n` +
-                    `\`\`\`typescript\n` +
-                    `ngOnDestroy() {\n` +
-                    `  this.subscription.unsubscribe();\n` +
-                    `}\n` +
-                    `\`\`\``
-                  );
-                }
-              }
-
-              // Check for security vulnerabilities
-              const securityLines = lines
-                .map((line, index) => ({ line, index: index + 1 }))
-                .filter(({ line }) => {
-                  // Ignore comments
-                  if (line.trim().startsWith('//') || line.trim().startsWith('/*')) return false;
-                  
-                  // Check for actual security-sensitive patterns
-                  return (
-                    /\binnerHTML\s*=/.test(line) || 
-                    /bypassSecurityTrust\w+\s*\(/.test(line)
-                  );
-                });
-
-              for (const { line, index } of securityLines) {
-                const isInnerHTML = /\binnerHTML\s*=/.test(line);
-                const message = isInnerHTML ?
-                  `Direct innerHTML manipulation at ${file.filename}:${index} creates an XSS vulnerability.\n\n` +
-                  `Cross-Site Scripting (XSS) can occur when untrusted HTML is rendered. Instead:\n\n` +
-                  `1. For trusted HTML, use Angular's DomSanitizer:\n` +
-                  `\`\`\`typescript\n` +
-                  `constructor(private sanitizer: DomSanitizer) {}\n\n` +
-                  `safeHtml = this.sanitizer.sanitize(SecurityContext.HTML, userHtml);\n` +
-                  `\`\`\`\n\n` +
-                  `2. For text content, use textContent or interpolation:\n` +
-                  `\`\`\`typescript\n` +
-                  `element.textContent = content; // DOM\n` +
-                  `{{ content }} // Template\n` +
-                  `\`\`\`` :
-                  `Bypassing security sanitization at ${file.filename}:${index} is dangerous.\n\n` +
-                  `Using bypassSecurityTrust* methods skips Angular's XSS protections. Instead:\n\n` +
-                  `1. Use appropriate SecurityContext sanitization:\n` +
-                  `\`\`\`typescript\n` +
-                  `this.sanitizer.sanitize(SecurityContext.HTML, content);\n` +
-                  `\`\`\`\n\n` +
-                  `2. Or create a custom safe pipe for specific use cases:\n` +
-                  `\`\`\`typescript\n` +
-                  `@Pipe({ name: 'safeHtml' })\n` +
-                  `export class SafeHtmlPipe {\n` +
-                  `  transform(html: string): SafeHtml {\n` +
-                  `    return this.sanitizer.sanitize(SecurityContext.HTML, html);\n` +
-                  `  }\n` +
-                  `}\n` +
-                  `\`\`\``;
-                
-                await createComment(file, index, 'critical', 'Security Risk', message);
-              }
-
-              // Check for console.log statements
-              const consoleLines = lines
-                .map((line, index) => ({ line, index: index + 1 }))
-                .filter(({ line }) => {
-                  // Ignore comments
-                  const isComment = line.trim().startsWith('//') || line.trim().startsWith('/*');
-                  const hasConsole = /console\.(log|debug|info)\(/.test(line);
-                  return !isComment && hasConsole;
-                });
-
-              for (const { index } of consoleLines) {
-                await createComment(file, index, 'recommended', 'Code Cleanliness',
-                  'Remove console.log statement from production code.'
-                );
-              }
-
-              // Check for empty methods
-              const methodRegex = /(\w+\s*\([^)]*\)\s*{[^}]*})/g;
-              const methods = content.match(methodRegex) || [];
-              
-              for (const method of methods) {
-                const methodName = method.match(/(\w+)\s*\(/)[1];
-                const methodContent = method.match(/{([^}]*)}/)[1].trim();
-                
-                if (methodName === 'constructor' && methodContent === '') {
-                  continue;
-                }
-                
-                const isEmptyMethod = !methodContent || methodContent.split('\n')
-                  .every(line => line.trim() === '' || line.trim().startsWith('//'));
-                
-                if (isEmptyMethod) {
-                  const lineNum = lines.findIndex(line => line.includes(methodName)) + 1;
-                  await createComment(file, lineNum, 'recommended', 'Code Cleanliness',
-                    `Remove empty method '${methodName}' if it's not being used. If it's meant to be implemented later, add a TODO comment explaining the intended functionality.`
-                  );
-                }
-              }
-            }
-
-            async function checkHtmlFile(file, content, lines) {
-              // Check performance issues in templates
-              const ngForLines = lines
-                .map((line, index) => ({ line, index: index + 1 }))
-                .filter(({ line }) => {
-                  const hasNgFor = line.includes('*ngFor');
-                  const hasTrackBy = line.includes('trackBy');
-                  const hasComplexBinding = (line.match(/{{.*}}/g) || []).length > 1;
-                  return hasNgFor && !hasTrackBy && hasComplexBinding;
-                });
-
-              for (const { index } of ngForLines) {
-                await createComment(file, index, 'recommended', 'Performance',
-                  'Add trackBy function to improve rendering performance with complex *ngFor.'
-                );
-              }
-
-              // Check accessibility issues
-              for (let i = 0; i < lines.length; i++) {
-                const line = lines[i];
-                // Ignore comments
-                if (line.trim().startsWith('<!--')) continue;
-
-                if (line.includes('<img') && !line.includes('alt=')) {
-                  await createComment(file, i + 1, 'critical', 'Accessibility',
-                    'Add alt attribute to image for screen reader support.'
-                  );
-                }
-                if (line.includes('<button') && !line.includes('aria-label') && line.trim().endsWith('></button>')) {
-                  await createComment(file, i + 1, 'critical', 'Accessibility',
-                    'Empty button needs aria-label for screen reader support.'
-                  );
-                }
-                if (line.includes('<input') && !line.includes('aria-label') && !line.includes('id=')) {
-                  await createComment(file, i + 1, 'critical', 'Accessibility',
-                    'Input needs an associated label or aria-label for accessibility.'
-                  );
-                }
-              }
-
-              // Add after innerHtmlLines check in checkHtmlFile function
-              const stringLiteralsMap = new Map();
-
-              // Collect string literals used in directives
-              lines.forEach((line, index) => {
-                const directiveMatches = line.match(/\*ng[If|For|Switch]="[^"]*'([^']+)'[^"]*"/g);
-                if (directiveMatches) {
-                  directiveMatches.forEach(match => {
-                    const literals = match.match(/'([^']+)'/g);
-                    literals?.forEach(literal => {
-                      const clean = literal.replace(/'/g, '');
-                      if (!stringLiteralsMap.has(clean)) {
-                        stringLiteralsMap.set(clean, []);
-                      }
-                      stringLiteralsMap.get(clean).push(index + 1);
-                    });
-                  });
-                }
-              });
-
-              // Check for repeated string literals
-              for (const [literal, lineNumbers] of stringLiteralsMap.entries()) {
-                if (lineNumbers.length >= 2) {
-                  const enumName = literal.includes('-') ? 
-                    literal.split('-')[0].toUpperCase() : 
-                    literal.toUpperCase();
-                  
-                  await createComment(file, lineNumbers[0], 'recommended', 'String Literal Optimization',
-                    `String literal '${literal}' is used ${lineNumbers.length} times in Angular directives.\n\n` +
-                    `To improve type safety and maintainability, create an enum:\n\n` +
-                    `\`\`\`typescript\nenum ${enumName}Status {\n` +
-                    `  ${literal.toUpperCase().replace(/-/g, '_')} = '${literal}',\n` +
-                    `  // Add other related status values here\n` +
-                    `}\n\`\`\`\n\n` +
-                    `Then update the template to use:\n` +
-                    `\`\`\`html\n*ngIf="variable === ${enumName}Status.${literal.toUpperCase().replace(/-/g, '_')}"\n\`\`\`\n\n` +
-                    `Found on lines: ${lineNumbers.join(', ')}`
-                  );
-                }
-              }
-
-              // Check for dangerous innerHTML bindings
-              const innerHtmlLines = lines
-                .map((line, index) => ({ line, index: index + 1 }))
-                .filter(({ line }) => {
-                  const isComment = line.trim().startsWith('<!--');
-                  const hasInnerHtml = line.includes('[innerHTML]');
-                  return !isComment && hasInnerHtml;
-                });
-
-              for (const { index } of innerHtmlLines) {
-                await createComment(file, index, 'critical', 'Security Risk',
-                  'Using [innerHTML] can lead to XSS vulnerabilities. Use Angular\'s DomSanitizer or a safe pipe instead.'
-                );
-              }
-
-
-            }
-
-            async function checkStyleFile(file, content, lines) {
-              // Check for !important usage
-              const importantLines = lines
-                .map((line, index) => ({ line, index: index + 1 }))
-                .filter(({ line }) => {
-                  // Ignore comments
-                  if (line.trim().startsWith('//') || line.trim().startsWith('/*')) return false;
-                  if (line.includes('*/')) return false;
-                  
-                  // Match !important in actual CSS rules
-                  return /:\s*[^;]+!\s*important\s*;/.test(line);
-                });
-
-              for (const { line, index } of importantLines) {
-                await createComment(file, index, 'recommended', 'CSS Best Practices',
-                  `\`!important\` declaration found in ${file.filename}:${index}.\n\n` +
-                  `Using !important makes styles harder to maintain and override. Instead:\n\n` +
-                  `1. Use more specific selectors:\n` +
-                  `\`\`\`css\n` +
-                  `.parent .specific-class { ... }\n` +
-                  `\`\`\`\n\n` +
-                  `2. Use combinators to increase specificity:\n` +
-                  `\`\`\`css\n` +
-                  `.sidebar > .nav-item { ... }\n` +
-                  `\`\`\`\n\n` +
-                  `3. If needed, use CSS custom properties for dynamic values:\n` +
-                  `\`\`\`css\n` +
-                  `:root { --primary-color: #007bff; }\n` +
-                  `.element { color: var(--primary-color); }\n` +
-                  `\`\`\``
-                );
-              }
-
-              // Check for magic numbers in measurements
-              const magicNumberLines = lines
-                .map((line, index) => ({ line, index: index + 1 }))
-                .filter(({ line }) => {
-                  // Ignore comments
-                  if (line.trim().startsWith('//') || line.trim().startsWith('/*')) return false;
-                  
-                  const hasPx = line.match(/\d+px/g);
-                  const hasRem = line.match(/\d+rem/g);
-                  const hasEm = line.match(/\d+em/g);
-                  return (hasPx && hasPx.length > 0) || (hasRem && hasRem.length > 0) || (hasEm && hasEm.length > 0);
-                });
-
-              for (const { index, line } of magicNumberLines) {
-                if (line.match(/(width|height|margin|padding):/)) {
-                  await createComment(file, index, 'optional', 'Maintainability',
-                    'Consider using CSS variables or theme constants for consistent spacing values.'
-                  );
-                }
-              }
-            }
-
             // Process files
             for (const file of files) {
               try {
-                if (file.status === 'removed') continue;
+                if (file.status === 'removed' || !file.filename.endsWith('.html')) continue;
                 
-                const content = await fs.readFileSync(file.filename, 'utf8');
+                console.log('Processing HTML file:', file.filename);
+                const content = await fs.promises.readFile(file.filename, 'utf8');
                 const lines = content.split('\n');
-                const extension = file.filename.split('.').pop().toLowerCase();
+                console.log('Found lines:', lines.length);
 
-                switch (extension) {
-                  case 'ts':
-                    await checkTypeScriptFile(file, content, lines);
-                    break;
-                  case 'html':
-                    await checkHtmlFile(file, content, lines);
-                    break;
-                  case 'scss':
-                  case 'css':
-                    await checkStyleFile(file, content, lines);
-                    break;
+                const stringLiteralsMap = new Map();
+
+                // Collect string literals used in directives
+                lines.forEach((line, index) => {
+                  // Updated regex to be more flexible
+                  const directiveMatches = line.match(/\*ng(?:If|For|Switch)=['"].*?['"](?:[^>]*>|$)/g);
+                  if (directiveMatches) {
+                    directiveMatches.forEach(match => {
+                      // Extract literals between quotes
+                      const literals = match.match(/['"]([^'"]+)['"]/g);
+                      literals?.forEach(literal => {
+                        const clean = literal.replace(/^['"]|['"]$/g, '').trim();
+                        if (clean && !stringLiteralsMap.has(clean)) {
+                          stringLiteralsMap.set(clean, []);
+                        }
+                        if (clean) {
+                          stringLiteralsMap.get(clean).push(index + 1);
+                        }
+                      });
+                    });
+                  }
+                });
+
+                console.log('String literals found:', Array.from(stringLiteralsMap.entries()));
+
+                // Check for repeated string literals
+                for (const [literal, lineNumbers] of stringLiteralsMap.entries()) {
+                  if (lineNumbers.length >= 2) {
+                    const enumName = literal.includes('-') ? 
+                      literal.split('-')[0].toUpperCase() : 
+                      literal.toUpperCase();
+                    
+                    const message = `String literal '${literal}' is used ${lineNumbers.length} times in Angular directives.\n\n` +
+                      `To improve type safety and maintainability, create an enum:\n\n` +
+                      `\`\`\`typescript\nenum ${enumName}Status {\n` +
+                      `  ${literal.toUpperCase().replace(/-/g, '_')} = '${literal}',\n` +
+                      `  // Add other related status values here\n` +
+                      `}\n\`\`\`\n\n` +
+                      `Then update the template to use:\n` +
+                      `\`\`\`html\n*ngIf="variable === ${enumName}Status.${literal.toUpperCase().replace(/-/g, '_')}"\n\`\`\`\n\n` +
+                      `Found on lines: ${lineNumbers.join(', ')}`;
+
+                    await createComment(
+                      file,
+                      lineNumbers[0],
+                      'recommended',
+                      'String Literal Optimization',
+                      message
+                    );
+                  }
                 }
               } catch (error) {
                 console.error(`Error processing file ${file.filename}:`, error);
+                core.setFailed(`Error processing file ${file.filename}: ${error.message}`);
               }
             }
 
+            
       - name: Verify Changes and Auto-resolve Comments
         if: github.event.action == 'synchronize' || github.event.action == 'opened'
         uses: actions/github-script@v7
