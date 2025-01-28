@@ -399,7 +399,7 @@ jobs:
                 if (
                   comment.position === null || // Comment is outdated
                   comment.state === 'RESOLVED' || // Explicitly resolved
-                  comment.body.toLowerCase().includes('show resolved') // UI resolution
+                  comment.body.toLowerCase().includes('Show resolved') || comment.body.toLowerCase().includes('resolved') // UI resolution
                 ) {
                   resolvedCommentIds.add(comment.id);
                   return;
