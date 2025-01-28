@@ -61,6 +61,28 @@ jobs:
               pull_number: context.issue.number,
             });
 
+            // Create a map of file contents
+            const fileContents = new Map();
+            for (const file of files) {
+              try {
+                if (file.status === 'removed') {
+                  fileContents.set(file.filename, { status: 'removed' });
+                  continue;
+                }
+
+                const content = fs.readFileSync(file.filename, 'utf8');
+                fileContents.set(file.filename, {
+                  content,
+                  lines: content.split('\n'),
+                  status: file.status,
+                  patch: file.patch
+                });
+              } catch (error) {
+                console.error(`Error reading file ${file.filename}:`, error);
+                fileContents.set(file.filename, { status: 'removed' });
+              }
+            }
+
             async function createComment(file, line, priority, category, message) {
               const priorityEmoji = {
                 critical: '🚨 CRITICAL: ',
@@ -104,7 +126,7 @@ jobs:
                 }
               }
 
-              // Security vulnerabilities
+              // Check for security vulnerabilities
               const securityLines = lines
                 .map((line, index) => ({ line, index: index + 1 }))
                 .filter(({ line }) => 
@@ -118,7 +140,7 @@ jobs:
                 );
               }
 
-              // Console.log statements
+              // Check for console.log statements
               const consoleLines = lines
                 .map((line, index) => ({ line, index: index + 1 }))
                 .filter(({ line }) => /console\.(log|debug|info)\(/.test(line));
@@ -131,7 +153,7 @@ jobs:
             }
 
             async function checkHtmlFile(file, content, lines) {
-              // Performance issues in templates
+              // Check performance issues in templates
               const ngForLines = lines
                 .map((line, index) => ({ line, index: index + 1 }))
                 .filter(({ line }) => {
@@ -147,7 +169,7 @@ jobs:
                 );
               }
 
-              // Accessibility issues
+              // Check accessibility issues
               for (let i = 0; i < lines.length; i++) {
                 const line = lines[i];
                 if (line.includes('<img') && !line.includes('alt=')) {
@@ -169,7 +191,7 @@ jobs:
             }
 
             async function checkStyleFile(file, content, lines) {
-              // Important declarations
+              // Check for !important usage
               const importantLines = lines
                 .map((line, index) => ({ line, index: index + 1 }))
                 .filter(({ line }) => line.includes('!important'));
@@ -180,7 +202,7 @@ jobs:
                 );
               }
 
-              // Magic numbers
+              // Check for magic numbers in styles
               const magicNumberLines = lines
                 .map((line, index) => ({ line, index: index + 1 }))
                 .filter(({ line }) => {
@@ -201,26 +223,19 @@ jobs:
 
             // Process files
             for (const file of files) {
-              try {
-                const content = await fs.readFileSync(file.filename, 'utf8');
-                const lines = content.split('\n');
-                
+              const fileInfo = fileContents.get(file.filename);
+              if (file.status !== 'removed' && fileInfo?.content) {
                 const extension = file.filename.split('.').pop().toLowerCase();
-                
-                switch (extension) {
-                  case 'ts':
-                    await checkTypeScriptFile(file, content, lines);
-                    break;
-                  case 'html':
-                    await checkHtmlFile(file, content, lines);
-                    break;
-                  case 'scss':
-                  case 'css':
-                    await checkStyleFile(file, content, lines);
-                    break;
+                const checksMap = {
+                  ts: checkTypeScriptFile,
+                  html: checkHtmlFile,
+                  scss: checkStyleFile,
+                  css: checkStyleFile
+                };
+
+                if (checksMap[extension]) {
+                  await checksMap[extension](file, fileInfo.content, fileInfo.lines);
                 }
-              } catch (error) {
-                console.error(`Error processing file ${file.filename}:`, error);
               }
             }
 
@@ -230,130 +245,185 @@ jobs:
         with:
           script: |
             const fs = require('fs');
-            
-            async function checkCommentResolution() {
-              // Get PR information
-              const { data: pr } = await github.rest.pulls.get({
-                ...context.repo,
-                pull_number: context.issue.number,
-              });
-              const headSha = pr.head.sha;
 
-              // Get all review comments
-              const { data: comments } = await github.rest.pulls.listReviewComments({
-                ...context.repo,
-                pull_number: context.issue.number,
-              });
+            // Get PR information
+            const { data: pr } = await github.rest.pulls.get({
+              ...context.repo,
+              pull_number: context.issue.number,
+            });
+            const headSha = pr.head.sha;
 
-              async function resolveComment(comment, reason) {
-                try {
+            // Get all review comments
+            const { data: comments } = await github.rest.pulls.listReviewComments({
+              ...context.repo,
+              pull_number: context.issue.number,
+            });
+
+            // Create a map of file contents
+            const fileContents = new Map();
+            for (const file of files) {
+              try {
+                if (file.status === 'removed') {
+                  fileContents.set(file.filename, { status: 'removed' });
+                  continue;
+                }
+
+                const content = fs.readFileSync(file.filename, 'utf8');
+                fileContents.set(file.filename, {
+                  content,
+                  lines: content.split('\n'),
+                  status: file.status,
+                  patch: file.patch
+                });
+              } catch (error) {
+                console.error(`Error reading file ${file.filename}:`, error);
+                fileContents.set(file.filename, { status: 'removed' });
+              }
+            }
+
+            async function verifyFix(comment) {
+              const file = comment.path;
+              const fileInfo = fileContents.get(file);
+              
+              // Handle removed files
+              if (!fileInfo || fileInfo.status === 'removed') {
+                await github.rest.pulls.createReviewComment({
+                  ...context.repo,
+                  pull_number: context.issue.number,
+                  commit_id: headSha,
+                  path: comment.path,
+                  line: comment.line,
+                  body: '✅ Issue resolved - File has been removed.',
+                  in_reply_to: comment.id
+                });
+                return true;
+              }
+
+              // Handle removed or changed lines
+              if (comment.line > fileInfo.lines.length || 
+                  (fileInfo.status === 'modified' && !fileInfo.lines[comment.line - 1]?.includes(comment.original_line))) {
+                await github.rest.pulls.createReviewComment({
+                  ...context.repo,
+                  pull_number: context.issue.number,
+                  commit_id: headSha,
+                  path: comment.path,
+                  line: comment.line,
+                  body: '✅ Issue resolved - Code has been modified or removed.',
+                  in_reply_to: comment.id
+                });
+                return true;
+              }
+
+              // Handle manual resolutions through conversation
+              const conversationResolved = comments.some(reply => 
+                (reply.in_reply_to === comment.id || reply.id === comment.id) && 
+                (
+                  /resolved|fixed|completed|done/i.test(reply.body) ||
+                  reply.body.includes('marked conversation as resolved') ||
+                  reply.body.includes('Resolved conversation') ||
+                  reply.state === 'resolved'
+                )
+              );
+              
+              if (conversationResolved) {
+                await github.rest.pulls.createReviewComment({
+                  ...context.repo,
+                  pull_number: context.issue.number,
+                  commit_id: headSha,
+                  path: comment.path,
+                  line: comment.line,
+                  body: '✅ Issue resolved - Manually marked as resolved.',
+                  in_reply_to: comment.id
+                });
+                return true;
+              }
+
+              // Issue-specific verification rules
+              const rules = {
+                'Memory Leak Risk': () => {
+                  return fileInfo.content.includes('takeUntil') || 
+                         fileInfo.content.includes('| async') || 
+                         fileInfo.content.includes('unsubscribe()');
+                },
+                'Security Risk': () => {
+                  const line = fileInfo.lines[comment.line - 1] || '';
+                  return !line.includes('innerHTML') && 
+                         !line.includes('bypassSecurityTrust');
+                },
+                'Accessibility': () => {
+                  const line = fileInfo.lines[comment.line - 1] || '';
+                  if (line.includes('<img')) {
+                    return line.includes('alt=');
+                  }
+                  if (line.includes('<button')) {
+                    return line.includes('aria-label') || 
+                           !line.trim().endsWith('></button>');
+                  }
+                  if (line.includes('<input')) {
+                    return line.includes('aria-label') || 
+                           line.includes('id=');
+                  }
+                  return false;
+                },
+                'Performance': () => {
+                  if (comment.body.toLowerCase().includes('ngfor')) {
+                    const line = fileInfo.lines[comment.line - 1] || '';
+                    return line.includes('trackBy');
+                  }
+                  return false;
+                }
+              };
+
+              // Check if any rule matches and is satisfied
+              for (const [category, checkRule] of Object.entries(rules)) {
+                if (comment.body.includes(category) && checkRule()) {
                   await github.rest.pulls.createReviewComment({
                     ...context.repo,
                     pull_number: context.issue.number,
                     commit_id: headSha,
                     path: comment.path,
-                    body: `✅ ${reason}`,
-                    in_reply_to: comment.id,
-                    line: comment.line
+                    line: comment.line,
+                    body: `✅ Issue resolved - ${category} has been fixed.`,
+                    in_reply_to: comment.id
                   });
-                  console.log(`Resolved comment in ${comment.path} at line ${comment.line}: ${reason}`);
-                } catch (error) {
-                  console.error('Error resolving comment:', error);
+                  return true;
                 }
               }
 
-              // Process each comment
-              for (const comment of comments) {
-                // Skip already resolved comments
-                if (comment.body.includes('✅')) continue;
+              return false;
+            }
 
-                // Get the full conversation for this comment
-                const { data: replies } = await github.rest.pulls.listReviewComments({
-                  ...context.repo,
-                  pull_number: context.issue.number,
-                });
-
-                const conversation = replies.filter(reply => 
-                  reply.in_reply_to === comment.id || 
-                  reply.id === comment.id
-                );
-
-                // Check if conversation is resolved through UI
-                const isResolved = conversation.some(reply => 
-                  reply.body.includes('Resolved conversation') ||
-                  reply.body.includes('marked conversation as resolved') ||
-                  reply.body.toLowerCase().includes('resolved') ||
-                  reply.state === 'resolved'
-                );
-
-                if (isResolved) {
-                  await resolveComment(comment, 'Issue resolved - Conversation marked as resolved');
-                  continue;
+            // Process each comment
+            for (const comment of comments) {
+              // Skip already resolved comments
+              if (comment.body.includes('✅')) continue;
+              
+              try {
+                const isFixed = await verifyFix(comment);
+                if (isFixed) {
+                  core.info(`Resolved comment in ${comment.path} at line ${comment.line}`);
                 }
-
-                // Check if file still exists
-                let currentContent;
-                try {
-                  currentContent = await fs.readFileSync(comment.path, 'utf8');
-                } catch (error) {
-                  await resolveComment(comment, 'Issue resolved - File has been removed');
-                  continue;
-                }
-
-                // Check if line still exists or has changed
-                const lines = currentContent.split('\n');
-                if (!lines[comment.line - 1] || lines[comment.line - 1] !== comment.original_line) {
-                  await resolveComment(comment, 'Issue resolved - Code has been modified');
-                  continue;
-                }
-
-                // Check issue-specific resolutions
-                const commentBody = comment.body.toLowerCase();
-                const line = lines[comment.line - 1] || '';
-
-                // Memory leak fixes
-                if (commentBody.includes('memory leak')) {
-                  if (currentContent.includes('takeUntil') || 
-                      currentContent.includes('| async') || 
-                      currentContent.includes('unsubscribe()')) {
-                    await resolveComment(comment, 'Issue resolved - Memory leak fixed');
-                  }
-                }
-                // Security fixes
-                else if (commentBody.includes('security risk')) {
-                  if (!line.includes('innerHTML') && !line.includes('bypassSecurityTrust')) {
-                    await resolveComment(comment, 'Issue resolved - Security issue fixed');
-                  }
-                }
-                // Accessibility fixes
-                else if (commentBody.includes('accessibility')) {
-                  if ((line.includes('<img') && line.includes('alt=')) ||
-                      (line.includes('<button') && (line.includes('aria-label') || !line.trim().endsWith('></button>'))) ||
-                      (line.includes('<input') && (line.includes('aria-label') || line.includes('id=')))) {
-                    await resolveComment(comment, 'Issue resolved - Accessibility issue fixed');
-                  }
-                }
-                // Performance fixes
-                else if (commentBody.includes('performance') && commentBody.includes('ngfor')) {
-                  if (line.includes('trackBy')) {
-                    await resolveComment(comment, 'Issue resolved - Performance issue fixed');
-                  }
-                }
+              } catch (error) {
+                console.error(`Error processing comment: ${error}`);
               }
             }
 
-            // Run the comment resolution check
-            await checkCommentResolution();
-
-            // Check for remaining critical issues
-            const { data: remainingComments } = await github.rest.pulls.listReviewComments({
-              ...context.repo,
-              pull_number: context.issue.number,
-            });
-
-            const criticalIssues = remainingComments.filter(comment => 
+            // Check remaining critical issues
+            const criticalIssues = comments.filter(comment => 
+              // Only consider unresolved comments
               !comment.body.includes('✅') && 
-              comment.body.includes('🚨 CRITICAL')
+              // Only consider critical issues
+              comment.body.includes('🚨 CRITICAL') &&
+              // Check if the comment has any resolution replies
+              !comments.some(reply => 
+                reply.in_reply_to === comment.id && 
+                (
+                  /resolved|fixed|completed|done/i.test(reply.body) ||
+                  reply.body.includes('marked conversation as resolved') ||
+                  reply.body.includes('Resolved conversation') ||
+                  reply.state === 'resolved'
+                )
+              )
             );
 
             if (criticalIssues.length > 0) {
