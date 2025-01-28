@@ -44,17 +44,43 @@ jobs:
             });
             const latestCommitSha = pr.head.sha;
             
-            // Store existing comments to prevent duplicates
-            const existingComments = new Map();
-            const { data: currentComments } = await github.rest.pulls.listReviewComments({
+            // Get all review comments
+            const { data: comments } = await github.rest.pulls.listReviewComments({
               ...context.repo,
               pull_number: context.issue.number,
             });
-            
-            for (const comment of currentComments) {
-              const key = `${comment.path}:${comment.line}:${comment.body}`;
-              existingComments.set(key, comment);
+
+            // Get the latest PR changes and create file content map
+            const { data: files } = await github.rest.pulls.listFiles({
+              ...context.repo,
+              pull_number: context.issue.number,
+            });
+
+            // Create a map of modified files and their content
+            const fileContents = new Map();
+            for (const file of files) {
+              try {
+                // If file is deleted, just store the status
+                if (file.status === 'removed') {
+                  fileContents.set(file.filename, { status: 'removed' });
+                  continue;
+                }
+
+                // For other files, store content and status
+                const content = fs.readFileSync(file.filename, 'utf8');
+                fileContents.set(file.filename, {
+                  content,
+                  lines: content.split('\n'),
+                  status: file.status,
+                  raw: file.raw
+                });
+              } catch (error) {
+                console.error(`Error reading file ${file.filename}: ${error}`);
+                fileContents.set(file.filename, { status: 'removed' });
+              }
             }
+
+            // Process comments and files
 
             async function createComment(file, line, priority, category, message) {
               const priorityEmoji = {
@@ -307,18 +333,18 @@ jobs:
               }
             }
 
-            // Process changed files
-            const { data: files } = await github.rest.pulls.listFiles({
-              ...context.repo,
-              pull_number: context.issue.number,
-            });
-
-            // Filter for specific file extensions
+            // Filter for specific file extensions and process each file
             const allowedExtensions = ['ts', 'html', 'scss', 'css', 'js'];
             
             for (const file of files) {
               const fileExt = file.filename.split('.').pop().toLowerCase();
-              if (file.status !== 'removed' && allowedExtensions.includes(fileExt)) {  // Skip deleted files and check extension
+              const fileInfo = fileContents.get(file.filename);
+              
+              if (file.status !== 'removed' && 
+                  allowedExtensions.includes(fileExt) && 
+                  fileInfo?.content) {
+                await checkFileContent(file, fileInfo.content, fileInfo.lines, fileExt);
+              }
                 const content = fs.readFileSync(file.filename, 'utf8');
                 const lines = content.split('\n');
                 const fileExt = file.filename.split('.').pop();
