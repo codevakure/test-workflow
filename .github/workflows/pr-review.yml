@@ -50,6 +50,11 @@ jobs:
               pull_number: context.issue.number,
             });
 
+            // Create a Set of existing comment keys to prevent duplicates
+            const existingComments = new Set(
+              comments.map(comment => `${comment.path}:${comment.line}:${comment.body}`)
+            );
+
             // Get the latest PR changes and create file content map
             const { data: files } = await github.rest.pulls.listFiles({
               ...context.repo,
@@ -81,7 +86,6 @@ jobs:
             }
 
             // Process comments and files
-
             async function createComment(file, line, priority, category, message) {
               const priorityEmoji = {
                 critical: '🚨 CRITICAL: ',
@@ -128,6 +132,19 @@ jobs:
 
               if (checksMap[fileExt]) {
                 await checksMap[fileExt](file, content, lines);
+              }
+            }
+
+            // Process each file
+            for (const file of files) {
+              if (file.status !== 'removed') {
+                const fileInfo = fileContents.get(file.filename);
+                if (fileInfo?.content) {
+                  const fileExt = file.filename.split('.').pop().toLowerCase();
+                  if (['ts', 'html', 'scss', 'css', 'js'].includes(fileExt)) {
+                    await checkFileContent(file, fileInfo.content, fileInfo.lines, fileExt);
+                  }
+                }
               }
             }
 
