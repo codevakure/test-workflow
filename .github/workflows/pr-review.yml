@@ -4,11 +4,11 @@ on:
   pull_request:
     types: [opened, synchronize]
     paths:
-      - '**.ts'
-      - '**.js'
-      - '**.html'
-      - '**.scss'
-      - '**.css'
+      - "**.ts"
+      - "**.js"
+      - "**.html"
+      - "**.scss"
+      - "**.css"
 
 permissions:
   contents: read
@@ -26,8 +26,8 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '18'
-          cache: 'npm'
+          node-version: "18"
+          cache: "npm"
 
       - name: Install Dependencies
         run: npm install
@@ -37,42 +37,28 @@ jobs:
         uses: actions/github-script@v7
         with:
           script: |
-            const fs = require('fs');
+            const fs = require("fs");
             
             let criticalIssuesFound = false;
             const criticalIssues = [];
 
-            // Create initial check run
-            const { data: check } = await github.rest.checks.create({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              name: 'Ionic/Angular PR Review',
-              head_sha: context.payload.pull_request.head.sha,
-              status: 'in_progress',
-              started_at: new Date().toISOString()
-            });
-
-            // Store processed comments to avoid duplicates
-            const processedComments = new Set();
-
             async function createComment(github, context, file, line, priority, category, message) {
               const commentKey = `${file.filename}:${line}:${category}`;
-              if (processedComments.has(commentKey)) return;
               
               const priorityEmoji = {
-                critical: '🚨 CRITICAL: ',
-                recommended: '💡 RECOMMENDED: ',
-                optional: '💭 OPTIONAL: '
+                critical: "🚨 CRITICAL: ",
+                recommended: "💡 RECOMMENDED: ",
+                optional: "💭 OPTIONAL: ",
               };
 
               try {
                 const { data: pullRequest } = await github.rest.pulls.get({
                   owner: context.repo.owner,
                   repo: context.repo.repo,
-                  pull_number: context.payload.pull_request.number
+                  pull_number: context.payload.pull_request.number,
                 });
                 
-                if (priority === 'critical') {
+                if (priority === "critical") {
                   criticalIssuesFound = true;
                   criticalIssues.push(`${file.filename}:${line} - ${category}`);
                 }
@@ -85,402 +71,382 @@ jobs:
                   path: file.filename,
                   body: `${priorityEmoji[priority]}**${category}**\n\n${message}`,
                   line: line,
-                  side: 'RIGHT'
+                  side: "RIGHT",
                 });
-
-                processedComments.add(commentKey);
               } catch (error) {
                 console.error(`Failed to create review comment: ${error.message}`);
-                // Fallback to issue comment
                 await github.rest.issues.createComment({
                   owner: context.repo.owner,
                   repo: context.repo.repo,
                   issue_number: context.payload.pull_request.number,
-                  body: `In file \`${file.filename}\` line ${line}:\n\n${priorityEmoji[priority]}**${category}**\n\n${message}`
+                  body: `In file \`${file.filename}\` line ${line}:\n\n${priorityEmoji[priority]}**${category}**\n\n${message}`,
                 });
               }
             }
 
-            async function verifyFix(github, context, file, comment) {
-              try {
-                const content = fs.readFileSync(file, 'utf8');
-                const category = comment.body.match(/\*\*(.*?)\*\*/)?.[1];
-                if (!category) return false;
+            async function checkFileContent(github, context, file, content, lines, fileExt) {
+              const allowedExtensions = ["ts", "js", "html", "scss", "css"];
+              if (!allowedExtensions.includes(fileExt)) {
+                return;
+              }
 
-                const verificationRules = {
-                  'Security Risk': (content) => {
-                    if (comment.body.includes('innerHTML')) {
-                      return !content.match(/\.[a-zA-Z]+\.innerHTML\s*=/) &&
-                             !content.match(/\[innerHTML\]\s*=/) &&
-                             !content.match(/innerHTML\s*=\s*['"]/);
-                    }
-                    if (comment.body.includes('bypassSecurityTrust')) {
-                      return !content.match(/bypassSecurityTrust\w+\s*\(/);
-                    }
-                    return false;
-                  },
-                  'Memory Leak Risk': (content) => {
-                    return content.includes('takeUntil') ||
-                           content.includes('| async') ||
-                           (content.includes('unsubscribe()') && content.includes('ngOnDestroy'));
-                  },
-                  'Performance': (content) => {
-                    if (comment.body.includes('trackBy')) {
-                      return content.includes('trackBy');
-                    }
-                    return false;
+              if (file.filename.includes(".github/workflows/") || 
+                  file.filename.includes(".spec.") || 
+                  file.filename.includes("test.")) {
+                return;
+              }
+
+              // Security Checks
+              if (fileExt === "ts" || fileExt === "js" || fileExt === "html") {
+                const securityRisks = [];
+                lines.forEach((line, index) => {
+                  if (line.match(/\.[a-zA-Z]+\.innerHTML\s*=/) || 
+                      line.match(/\[innerHTML\]\s*=/) || 
+                      line.match(/innerHTML\s*=\s*['"]/)) {
+                    securityRisks.push({
+                      line: index + 1,
+                      risk: "innerHTML",
+                    });
                   }
-                };
+                  
+                  if (line.match(/bypassSecurityTrust\w+\s*\(/) &&
+                      !line.includes("// sanitized") && 
+                      !line.includes("/* sanitized */")) {
+                    securityRisks.push({
+                      line: index + 1,
+                      risk: "bypassSecurityTrust",
+                    });
+                  }
+                });
 
-                return verificationRules[category]?.(content) ?? false;
-              } catch (error) {
-                console.error(`Error verifying fix: ${error.message}`);
-                return false;
+                for (const risk of securityRisks) {
+                  await createComment(
+                    github,
+                    context,
+                    file,
+                    risk.line,
+                    "critical",
+                    "Security Risk",
+                    `Potential XSS vulnerability detected: ${risk.risk}. Use Angular's built-in sanitization. If this is intentional, add a comment '// sanitized' to suppress this warning.`
+                  );
+                }
+              }
+
+              if (fileExt === "ts" || fileExt === "js") {
+                await checkTypeScriptFile(github, context, file, content, lines);
+              }
+
+              if (fileExt === "html") {
+                await checkHtmlFile(github, context, file, content, lines);
+              }
+
+              if (fileExt === "scss" || fileExt === "css") {
+                await checkStyleFile(github, context, file, content, lines);
               }
             }
 
-            async function checkFileContent(github, context, file, content, lines, fileExt) {
-  // Only process specific file extensions
-  const allowedExtensions = ['ts', 'js', 'html', 'scss', 'css'];
-  if (!allowedExtensions.includes(fileExt)) {
-    return;
-  }
+            async function checkTypeScriptFile(github, context, file, content, lines) {
+              // Observable Memory Leak Checks
+              const subscriptions = content.match(/subscribe\s*\(/g);
+              const hasUnsubscribe = content.includes("unsubscribe()") || 
+                                   content.includes("takeUntil") ||
+                                   content.includes("| async");
+              
+              if (subscriptions && !hasUnsubscribe) {
+                const subscribeLineIndex = lines.findIndex(line => line.includes("subscribe")) + 1;
+                const message = [
+                  "Subscription not properly managed. Use one of these patterns:",
+                  "",
+                  "```typescript",
+                  "// Option 1: Using takeUntil",
+                  "private destroy$ = new Subject<void>();",
+                  "",
+                  "ngOnInit() {",
+                  "  this.someObservable$.pipe(",
+                  "    takeUntil(this.destroy$)",
+                  "  ).subscribe(data => ...);",
+                  "}",
+                  "",
+                  "ngOnDestroy() {",
+                  "  this.destroy$.next();",
+                  "  this.destroy$.complete();",
+                  "}",
+                  "",
+                  "// Option 2: Using async pipe in template",
+                  "{{ data$ | async }}",
+                  "",
+                  "// Option 3: Manual unsubscription",
+                  "private subscription: Subscription;",
+                  "",
+                  "ngOnInit() {",
+                  "  this.subscription = this.data$.subscribe(...);",
+                  "}",
+                  "",
+                  "ngOnDestroy() {",
+                  "  this.subscription?.unsubscribe();",
+                  "}",
+                  "```"
+                ].join("\n");
 
-  // Skip checks for workflow files and test files
-  if (file.filename.includes('.github/workflows/') || 
-      file.filename.includes('.spec.') || 
-      file.filename.includes('test.')) {
-    return;
-  }
+                await createComment(
+                  github,
+                  context,
+                  file,
+                  subscribeLineIndex,
+                  "critical",
+                  "Memory Leak Risk",
+                  message
+                );
+              }
 
-  // Security Checks - for script and template files
-  if (fileExt === 'ts' || fileExt === 'js' || fileExt === 'html') {
-    const securityRisks = [];
-    lines.forEach((line, index) => {
-      // Check for innerHTML usage in actual DOM manipulation
-      if (line.match(/\.[a-zA-Z]+\.innerHTML\s*=/) || 
-          line.match(/\[innerHTML\]\s*=/) || 
-          line.match(/innerHTML\s*=\s*['"]/)) {
-        securityRisks.push({
-          line: index + 1,
-          risk: 'innerHTML'
-        });
-      }
-      
-      // Check for DomSanitizer bypass
-      if (line.match(/bypassSecurityTrust\w+\s*\(/) &&
-          !line.includes('// sanitized') && 
-          !line.includes('/* sanitized */')) {
-        securityRisks.push({
-          line: index + 1,
-          risk: 'bypassSecurityTrust'
-        });
-      }
-    });
+              // Change Detection Strategy Check
+              if (content.includes("@Component") && !content.includes("ChangeDetectionStrategy.OnPush")) {
+                const componentLineIndex = lines.findIndex(line => line.includes("@Component")) + 1;
+                const message = [
+                  "Consider using OnPush change detection strategy for better performance:",
+                  "",
+                  "```typescript",
+                  "@Component({",
+                  "  // ...",
+                  "  changeDetection: ChangeDetectionStrategy.OnPush",
+                  "})",
+                  "```"
+                ].join("\n");
 
-    // Report each security risk found
-    for (const risk of securityRisks) {
-      await createComment(
-        github,
-        context,
-        file,
-        risk.line,
-        'critical',
-        'Security Risk',
-        `Potential XSS vulnerability detected: ${risk.risk}. Use Angular's built-in sanitization. If this is intentional, add a comment '// sanitized' to suppress this warning.`
-      );
-    }
-  }
+                await createComment(
+                  github,
+                  context,
+                  file,
+                  componentLineIndex,
+                  "recommended",
+                  "Performance Optimization",
+                  message
+                );
+              }
 
-  // Script Specific Checks (TypeScript and JavaScript)
-  if (fileExt === 'ts' || fileExt === 'js') {
-    await checkTypeScriptFile(github, context, file, content, lines);
-  }
-
-  // HTML Specific Checks
-  if (fileExt === 'html') {
-    await checkHtmlFile(github, context, file, content, lines);
-  }
-
-  // Style Specific Checks
-  if (fileExt === 'scss' || fileExt === 'css') {
-    await checkStyleFile(github, context, file, content, lines);
-  }
-}
-
-async function checkTypeScriptFile(github, context, file, content, lines) {
-  // Observable Memory Leak Checks
-  const subscriptions = content.match(/subscribe\s*\(/g);
-  const hasUnsubscribe = content.includes('unsubscribe()') || 
-                         content.includes('takeUntil') ||
-                         content.includes('| async');
-  
-  if (subscriptions && !hasUnsubscribe) {
-    await createComment(
-      github,
-      context,
-      file,
-      lines.findIndex(line => line.includes('subscribe')) + 1,
-      'critical',
-      'Memory Leak Risk',
-      'Subscription not properly managed. Use one of these patterns:\n\n' +
-      '```typescript\n' +
-      '// Option 1: Using takeUntil\n' +
-      'private destroy$ = new Subject<void>();\n\n' +
-      'ngOnInit() {\n' +
-      '  this.someObservable$.pipe(\n' +
-      '    takeUntil(this.destroy$)\n' +
-      '  ).subscribe(data => ...);\n' +
-      '}\n\n' +
-      'ngOnDestroy() {\n' +
-      '  this.destroy$.next();\n' +
-      '  this.destroy$.complete();\n' +
-      '}\n\n' +
-      '// Option 2: Using async pipe in template\n' +
-      '{{ data$ | async }}\n\n' +
-      '// Option 3: Manual unsubscription\n' +
-      'private subscription: Subscription;\n\n' +
-      'ngOnInit() {\n' +
-      '  this.subscription = this.data$.subscribe(...);\n' +
-      '}\n\n' +
-      'ngOnDestroy() {\n' +
-      '  this.subscription?.unsubscribe();\n' +
-      '}\n' +
-      '```'
-    );
-  }
-
-  // Check for proper change detection strategy
-  if (content.includes('@Component') && !content.includes('ChangeDetectionStrategy.OnPush')) {
-    const componentLineIndex = lines.findIndex(line => line.includes('@Component'));
-    await createComment(
-      github,
-      context,
-      file,
-      componentLineIndex + 1,
-      'recommended',
-      'Performance Optimization',
-      'Consider using OnPush change detection strategy for better performance:\n\n' +
-      '```typescript\n' +
-      '@Component({\n' +
-      '  // ...\n' +
-      '  changeDetection: ChangeDetectionStrategy.OnPush\n' +
-      '})\n' +
-      '```'
-    );
-  }
-
-  // Check for magic strings/numbers
-  const magicNumberRegex = /=\s*[0-9]+(?![0-9]*\s*[xX])/;
-  const magicStringRegex = /=\s*['"][^'"]+['"]/;
-  lines.forEach((line, index) => {
-    if ((magicNumberRegex.test(line) || magicStringRegex.test(line)) && 
-        !line.includes('const') && 
-        !line.trim().startsWith('//')) {
-      createComment(
-        github,
-        context,
-        file,
-        index + 1,
-        'recommended',
-        'Code Maintainability',
-        'Consider using an enum or constant for this value to improve maintainability.'
-      );
-    }
-  });
-}
-
-async function checkHtmlFile(github, context, file, content, lines) {
-  // Performance Checks
-  if (content.includes('*ngFor') && !content.includes('trackBy')) {
-    await createComment(
-      github,
-      context,
-      file,
-      lines.findIndex(line => line.includes('*ngFor')) + 1,
-      'recommended',
-      'Performance',
-      'Add trackBy function to improve performance with *ngFor:\n\n' +
-      '```typescript\n' +
-      '// In your component:\n' +
-      'trackByFn(index: number, item: any): number {\n' +
-      '  return item.id; // or another unique identifier\n' +
-      '}\n' +
-      '```\n\n' +
-      '```html\n' +
-      '<!-- In your template: -->\n' +
-      '<div *ngFor="let item of items; trackBy: trackByFn">\n' +
-      '```'
-    );
-  }
-
-  // Accessibility Checks
-  const imgWithoutAlt = /<img[^>]*(?!alt=)[^>]*>/g;
-  const buttonWithoutLabel = /<button[^>]*>(?!\s*[^<]*[^<\s])[^>]*<\/button>/g;
-  const inputWithoutLabel = /<input[^>]*(?!aria-label|id=)[^>]*>/g;
-
-  if (imgWithoutAlt.test(content)) {
-    const lineNumber = lines.findIndex(line => imgWithoutAlt.test(line)) + 1;
-    await createComment(
-      github,
-      context,
-      file,
-      lineNumber,
-      'critical',
-      'Accessibility',
-      'IMG elements must have alt attributes for screen readers.'
-    );
-  }
-
-  if (buttonWithoutLabel.test(content)) {
-    const lineNumber = lines.findIndex(line => buttonWithoutLabel.test(line)) + 1;
-    await createComment(
-      github,
-      context,
-      file,
-      lineNumber,
-      'critical',
-      'Accessibility',
-      'BUTTON elements must have descriptive text content or an aria-label.'
-    );
-  }
-
-  if (inputWithoutLabel.test(content)) {
-    const lineNumber = lines.findIndex(line => inputWithoutLabel.test(line)) + 1;
-    await createComment(
-      github,
-      context,
-      file,
-      lineNumber,
-      'critical',
-      'Accessibility',
-      'INPUT elements must have associated labels or aria-labels.'
-    );
-  }
-}
-
-async function checkStyleFile(github, context, file, content, lines) {
-  // Track already commented lines to prevent duplicates
-  const commentedLines = new Set();
-  
-  // Get existing comments for this file
-  const { data: existingComments } = await github.rest.pulls.listReviewComments({
-    owner: context.repo.owner,
-    repo: context.repo.repo,
-    pull_number: context.payload.pull_request.number,
-  });
-  
-  // Record lines that already have comments
-  existingComments
-    .filter(comment => comment.path === file.filename)
-    .forEach(comment => commentedLines.add(comment.line));
-
-  // Check for hardcoded colors
-  const hardcodedColors = content.match(/#[0-9a-fA-F]{3,6}/g);
-  if (hardcodedColors) {
-    const uniqueColorLines = new Map();
-    lines.forEach((line, index) => {
-      hardcodedColors.forEach(color => {
-        if (line.includes(color) && !uniqueColorLines.has(color)) {
-          uniqueColorLines.set(color, index + 1);
-        }
-      });
-    });
-
-    for (const [color, lineNumber] of uniqueColorLines) {
-      if (!commentedLines.has(lineNumber)) {
-        await createComment(
-          github,
-          context,
-          file,
-          lineNumber,
-          'optional',
-          'Style Management',
-          'Consider using CSS variables for better maintainability:\n\n' +
-          '```css\n' +
-          ':root {\n' +
-          `  --color-primary: ${color};\n` +
-          '}\n\n' +
-          '.your-class {\n' +
-          '  color: var(--color-primary);\n' +
-          '}\n' +
-          '```'
-        );
-        commentedLines.add(lineNumber);
-      }
-    }
-  }
-
-  // Check for !important usage
-  const importantLines = lines
-    .map((line, index) => ({ line, index }))
-    .filter(({ line }) => line.includes('!important'));
-
-  for (const { line, index } of importantLines) {
-    if (!commentedLines.has(index + 1)) {
-      await createComment(
-        github,
-        context,
-        file,
-        index + 1,
-        'recommended',
-        'Style Management',
-        'Avoid using !important as it makes styles harder to maintain. Consider refactoring the CSS specificity instead.'
-      );
-      commentedLines.add(index + 1);
-    }
-  }
-}
-
-async function processFile(github, context, file) {
-              try {
-                const content = fs.readFileSync(file.filename, 'utf8');
-                const lines = content.split('\n');
-                const fileExt = file.filename.split('.').pop();
-
-                // Skip test files and workflow files
-                if (file.filename.includes('.spec.') ||
-                    file.filename.includes('.test.') ||
-                    file.filename.includes('.github/workflows/')) {
-                  return;
+              // Magic Values Check
+              const magicNumberRegex = /=\s*[0-9]+(?![0-9]*\s*[xX])/;
+              const magicStringRegex = /=\s*['"][^'"]+['"]/;
+              
+              lines.forEach(async (line, index) => {
+                if ((magicNumberRegex.test(line) || magicStringRegex.test(line)) && 
+                    !line.includes("const") && 
+                    !line.trim().startsWith("//")) {
+                  await createComment(
+                    github,
+                    context,
+                    file,
+                    index + 1,
+                    "recommended",
+                    "Code Maintainability",
+                    "Consider using an enum or constant for this value to improve maintainability."
+                  );
                 }
+              });
+            }
 
+            async function checkHtmlFile(github, context, file, content, lines) {
+              // Performance Check - ngFor
+              if (content.includes("*ngFor") && !content.includes("trackBy")) {
+                const ngForLineIndex = lines.findIndex(line => line.includes("*ngFor")) + 1;
+                const message = [
+                  "Add trackBy function to improve performance with *ngFor:",
+                  "",
+                  "```typescript",
+                  "// In your component:",
+                  "trackByFn(index: number, item: any): number {",
+                  "  return item.id; // or another unique identifier",
+                  "}",
+                  "```",
+                  "",
+                  "```html",
+                  "<!-- In your template: -->",
+                  '<div *ngFor="let item of items; trackBy: trackByFn">',
+                  "```"
+                ].join("\n");
+
+                await createComment(
+                  github,
+                  context,
+                  file,
+                  ngForLineIndex,
+                  "recommended",
+                  "Performance",
+                  message
+                );
+              }
+
+              // Accessibility Checks
+              const imgWithoutAlt = /<img[^>]*(?!alt=)[^>]*>/g;
+              const buttonWithoutLabel = /<button[^>]*>(?!\s*[^<]*[^<\s])[^>]*<\/button>/g;
+              const inputWithoutLabel = /<input[^>]*(?!aria-label|id=)[^>]*>/g;
+
+              if (imgWithoutAlt.test(content)) {
+                const lineNumber = lines.findIndex(line => imgWithoutAlt.test(line)) + 1;
+                await createComment(
+                  github,
+                  context,
+                  file,
+                  lineNumber,
+                  "critical",
+                  "Accessibility",
+                  "IMG elements must have alt attributes for screen readers."
+                );
+              }
+
+              if (buttonWithoutLabel.test(content)) {
+                const lineNumber = lines.findIndex(line => buttonWithoutLabel.test(line)) + 1;
+                await createComment(
+                  github,
+                  context,
+                  file,
+                  lineNumber,
+                  "critical",
+                  "Accessibility",
+                  "BUTTON elements must have descriptive text content or an aria-label."
+                );
+              }
+
+              if (inputWithoutLabel.test(content)) {
+                const lineNumber = lines.findIndex(line => inputWithoutLabel.test(line)) + 1;
+                await createComment(
+                  github,
+                  context,
+                  file,
+                  lineNumber,
+                  "critical",
+                  "Accessibility",
+                  "INPUT elements must have associated labels or aria-labels."
+                );
+              }
+            }
+
+            async function checkStyleFile(github, context, file, content, lines) {
+              const commentedLines = new Set();
+              
+              const { data: existingComments } = await github.rest.pulls.listReviewComments({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                pull_number: context.payload.pull_request.number,
+              });
+              
+              existingComments
+                .filter(comment => comment.path === file.filename)
+                .forEach(comment => commentedLines.add(comment.line));
+
+              // Check for hardcoded colors
+              const hardcodedColors = content.match(/#[0-9a-fA-F]{3,6}/g);
+              if (hardcodedColors) {
+                const uniqueColorLines = new Map();
+                lines.forEach((line, index) => {
+                  hardcodedColors.forEach(color => {
+                    if (line.includes(color) && !uniqueColorLines.has(color)) {
+                      uniqueColorLines.set(color, index + 1);
+                    }
+                  });
+                });
+
+                for (const [color, lineNumber] of uniqueColorLines) {
+                  if (!commentedLines.has(lineNumber)) {
+                    const message = [
+                      "Consider using CSS variables for better maintainability:",
+                      "",
+                      "```css",
+                      ":root {",
+                      `  --color-primary: ${color};`,
+                      "}",
+                      "",
+                      ".your-class {",
+                      "  color: var(--color-primary);",
+                      "}",
+                      "```"
+                    ].join("\n");
+
+                    await createComment(
+                      github,
+                      context,
+                      file,
+                      lineNumber,
+                      "optional",
+                      "Style Management",
+                      message
+                    );
+                    commentedLines.add(lineNumber);
+                  }
+                }
+              }
+
+              // Check for !important usage
+              const importantLines = lines
+                .map((line, index) => ({ line, index }))
+                .filter(({ line }) => line.includes("!important"));
+
+              for (const { line, index } of importantLines) {
+                if (!commentedLines.has(index + 1)) {
+                  await createComment(
+                    github,
+                    context,
+                    file,
+                    index + 1,
+                    "recommended",
+                    "Style Management",
+                    "Avoid using !important as it makes styles harder to maintain. Consider refactoring the CSS specificity instead."
+                  );
+                  commentedLines.add(index + 1);
+                }
+              }
+            }
+
+            // Create initial check run
+            const { data: check } = await github.rest.checks.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              name: "Ionic/Angular PR Review",
+              head_sha: context.payload.pull_request.head.sha,
+              status: "in_progress",
+              started_at: new Date().toISOString(),
+            });
+
+            // Process all files in the PR
+            const { data: files } = await github.rest.pulls.listFiles({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: context.payload.pull_request.number,
+            });
+
+            for (const file of files) {
+              try {
+                const content = fs.readFileSync(file.filename, "utf8");
+                const lines = content.split("\n");
+                const fileExt = file.filename.split(".").pop();
+                
                 await checkFileContent(github, context, file, content, lines, fileExt);
               } catch (error) {
                 console.error(`Error processing file ${file.filename}: ${error.message}`);
               }
             }
 
-            // Process all files in the PR
-            const { data: files } = await github.rest.pulls.listFiles({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              pull_number: context.payload.pull_request.number
-            });
-
-            for (const file of files) {
-              await processFile(github, context, file);
-            }
+            // Prepare check output
+            const checkOutput = {
+              title: criticalIssuesFound ? "🚨 Critical Issues Found" : "✅ No Critical Issues",
+              summary: criticalIssuesFound 
+                ? `The following critical issues must be resolved before merging:\n\n${criticalIssues.map(issue => `- ${issue}`).join("\n")}`
+                : "No critical issues found in the code review.",
+            };
 
             // Update check run status
             await github.rest.checks.update({
               owner: context.repo.owner,
               repo: context.repo.repo,
               check_run_id: check.id,
-              status: 'completed',
-              conclusion: criticalIssuesFound ? 'failure' : 'success',
+              status: "completed",
+              conclusion: criticalIssuesFound ? "failure" : "success",
               completed_at: new Date().toISOString(),
-              output: {
-                title: criticalIssuesFound ? '🚨 Critical Issues Found' : '✅ No Critical Issues',
-                summary: criticalIssuesFound ?
-                  'The following critical issues must be resolved before merging:\n\n' +
-                  criticalIssues.map(issue => `- ${issue}`).join('\n') :
-                  'No critical issues found in the code review.'
-              }
+              output: checkOutput,
             });
 
             if (criticalIssuesFound) {
-              core.setFailed('Critical issues must be resolved before merging.');
+              core.setFailed("Critical issues must be resolved before merging.");
             }
 
       - name: Verify Changes and Auto-resolve Comments
@@ -489,28 +455,79 @@ async function processFile(github, context, file) {
         continue-on-error: true
         with:
           script: |
-            const fs = require('fs');
+            const fs = require("fs");
             
+            async function verifyFix(file, comment) {
+              try {
+                const content = fs.readFileSync(file, "utf8");
+                const category = comment.body.match(/\*\*(.*?)\*\*/)?.[1];
+                
+                if (!category) return false;
+
+                const verificationRules = {
+                  "Security Risk": (content) => {
+                    if (comment.body.includes("innerHTML")) {
+                      return !content.match(/\.[a-zA-Z]+\.innerHTML\s*=/) &&
+                             !content.match(/\[innerHTML\]\s*=/) &&
+                             !content.match(/innerHTML\s*=\s*['"]/);
+                    }
+                    if (comment.body.includes("bypassSecurityTrust")) {
+                      return !content.match(/bypassSecurityTrust\w+\s*\(/);
+                    }
+                    return false;
+                  },
+                  "Memory Leak Risk": (content) => {
+                    return content.includes("takeUntil") ||
+                           content.includes("| async") ||
+                           (content.includes("unsubscribe()") && content.includes("ngOnDestroy"));
+                  },
+                  "Performance": (content) => {
+                    if (comment.body.includes("trackBy")) {
+                      return content.includes("trackBy");
+                    }
+                    return false;
+                  },
+                  "Accessibility": (content) => {
+                    if (comment.body.includes("IMG")) {
+                      return !/<img[^>]*(?!alt=)[^>]*>/g.test(content);
+                    }
+                    if (comment.body.includes("BUTTON")) {
+                      return !/<button[^>]*>(?!\s*[^<]*[^<\s])[^>]*<\/button>/g.test(content);
+                    }
+                    if (comment.body.includes("INPUT")) {
+                      return !/<input[^>]*(?!aria-label|id=)[^>]*>/g.test(content);
+                    }
+                    return false;
+                  },
+                };
+
+                return verificationRules[category]?.(content) ?? false;
+              } catch (error) {
+                console.error(`Error verifying fix for file ${file}: ${error.message}`);
+                return false;
+              }
+            }
+
             const { data: comments } = await github.rest.pulls.listReviewComments({
               owner: context.repo.owner,
               repo: context.repo.repo,
-              pull_number: context.payload.pull_request.number
+              pull_number: context.payload.pull_request.number,
             });
 
             let unresolvedCriticalIssues = 0;
 
             for (const comment of comments) {
               try {
-                if (!comment.body.includes('CRITICAL')) continue;
+                if (!comment.body.includes("CRITICAL")) continue;
 
-                const isFixed = await verifyFix(github, context, comment.path, comment);
+                const isFixed = await verifyFix(comment.path, comment);
                 
                 if (isFixed) {
                   await github.rest.pulls.updateReviewComment({
                     owner: context.repo.owner,
                     repo: context.repo.repo,
                     comment_id: comment.id,
-                    body: `${comment.body}\n\n✅ Issue resolved automatically based on implemented changes.`
+                    body: `${comment.body}\n\n✅ Issue resolved automatically based on implemented changes.`,
                   });
                 } else {
                   unresolvedCriticalIssues++;
@@ -521,23 +538,23 @@ async function processFile(github, context, file) {
               }
             }
 
-            const checkTitle = unresolvedCriticalIssues > 0 ? 
-              '🚨 Unresolved Critical Issues' : 
-              '✅ All Critical Issues Resolved';
+            const checkTitle = unresolvedCriticalIssues > 0 
+              ? "🚨 Unresolved Critical Issues" 
+              : "✅ All Critical Issues Resolved";
 
-            const checkSummary = unresolvedCriticalIssues > 0 ?
-              `${unresolvedCriticalIssues} critical issues remain unresolved.` :
-              'All critical issues have been resolved.';
+            const checkSummary = unresolvedCriticalIssues > 0
+              ? `${unresolvedCriticalIssues} critical issues remain unresolved.`
+              : "All critical issues have been resolved.";
 
             // Update check run status
             const { data: checkRuns } = await github.rest.checks.listForRef({
               owner: context.repo.owner,
               repo: context.repo.repo,
-              ref: context.payload.pull_request.head.sha
+              ref: context.payload.pull_request.head.sha,
             });
 
             const existingCheck = checkRuns.check_runs.find(check => 
-              check.name === 'Ionic/Angular PR Review'
+              check.name === "Ionic/Angular PR Review"
             );
 
             if (existingCheck) {
@@ -545,16 +562,16 @@ async function processFile(github, context, file) {
                 owner: context.repo.owner,
                 repo: context.repo.repo,
                 check_run_id: existingCheck.id,
-                status: 'completed',
-                conclusion: unresolvedCriticalIssues > 0 ? 'failure' : 'success',
+                status: "completed",
+                conclusion: unresolvedCriticalIssues > 0 ? "failure" : "success",
                 completed_at: new Date().toISOString(),
                 output: {
                   title: checkTitle,
-                  summary: checkSummary
-                }
+                  summary: checkSummary,
+                },
               });
             }
 
             if (unresolvedCriticalIssues > 0) {
-              core.setFailed('Critical issues must be resolved before merging.');
+              core.setFailed("Critical issues must be resolved before merging.");
             }
