@@ -93,61 +93,58 @@ jobs:
                 const lines = content.split('\n');
                 console.log('Found lines:', lines.length);
 
-                const stringLiteralsMap = new Map();
+              // Check for string literals in Angular directives
+              const stringLiteralsMap = new Map();
 
-                // Collect string literals used in directives
-                lines.forEach((line, index) => {
-                  // Updated regex to handle any type of equality operator (=, ==, ===)
-                  const directiveMatches = line.match(/\*ngIf="[^"]*[=!]=*\s*['"]([^'"]+)['"][^"]*"/g);
-                  if (directiveMatches) {
-                    directiveMatches.forEach(match => {
-                      const literals = match.match(/['"]([^'"]+)['"]/g);
-                      literals?.forEach(literal => {
-                        const clean = literal.replace(/['"]/g, '');
-                        if (!stringLiteralsMap.has(clean)) {
-                          stringLiteralsMap.set(clean, []);
+              lines.forEach((line, index) => {
+                if (line.includes('*ngIf')) {
+                  console.log(`Found ngIf line at ${index + 1}:`, line);
+                  // Match any string within quotes after any equality operator
+                  const matches = line.match(/[=!]=?\s*['"]([^'"]+)['"]/g);
+                  if (matches) {
+                    matches.forEach(match => {
+                      // Extract the actual string value
+                      const literalMatch = match.match(/['"]([^'"]+)['"]/);
+                      if (literalMatch) {
+                        const value = literalMatch[1];
+                        if (!stringLiteralsMap.has(value)) {
+                          stringLiteralsMap.set(value, []);
                         }
-                        stringLiteralsMap.get(clean).push(index + 1);
-                      });
+                        stringLiteralsMap.get(value).push(index + 1);
+                        console.log('Found literal:', value, 'at line:', index + 1);
+                      }
                     });
                   }
-                });
+                }
+              });
 
-                console.log('String literals found:', Array.from(stringLiteralsMap.entries()));
-
-                // Check for repeated string literals
-                for (const [literal, lineNumbers] of stringLiteralsMap.entries()) {
-                  if (lineNumbers.length >= 2) {
-                    const enumName = literal.includes('-') ? 
-                      literal.split('-')[0].toUpperCase() : 
-                      literal.toUpperCase();
-                    
-                    const message = `String literal '${literal}' is used ${lineNumbers.length} times in Angular directives.\n\n` +
-                      `To improve type safety and maintainability, create an enum:\n\n` +
-                      `\`\`\`typescript\nenum ${enumName}Status {\n` +
-                      `  ${literal.toUpperCase().replace(/-/g, '_')} = '${literal}',\n` +
-                      `  // Add other related status values here\n` +
-                      `}\n\`\`\`\n\n` +
-                      `Then update the template to use:\n` +
-                      `\`\`\`html\n*ngIf="variable === ${enumName}Status.${literal.toUpperCase().replace(/-/g, '_')}"\n\`\`\`\n\n` +
-                      `Found on lines: ${lineNumbers.join(', ')}`;
-
-                    await createComment(
-                      file,
-                      lineNumbers[0],
-                      'recommended',
-                      'String Literal Optimization',
-                      message
-                    );
-                  }
+              // Check for repeated string literals
+              for (const [literal, lineNumbers] of stringLiteralsMap.entries()) {
+                if (lineNumbers.length >= 2) {
+                  console.log('Creating comment for repeated literal:', literal);
+                  const enumName = literal.includes('-') ? 
+                    literal.split('-')[0].toUpperCase() : 
+                    literal.toUpperCase();
+                  
+                  await createComment(file, lineNumbers[0], 'recommended', 'String Literal Optimization',
+                    `String literal '${literal}' is used ${lineNumbers.length} times in Angular directives.\n\n` +
+                    `To improve type safety and maintainability, create an enum:\n\n` +
+                    `\`\`\`typescript\nenum ${enumName}Status {\n` +
+                    `  ${literal.toUpperCase().replace(/-/g, '_')} = '${literal}',\n` +
+                    `  // Add other related status values here\n` +
+                    `}\n\`\`\`\n\n` +
+                    `Then update the template to use:\n` +
+                    `\`\`\`html\n*ngIf="variable === ${enumName}Status.${literal.toUpperCase().replace(/-/g, '_')}"\n\`\`\`\n\n` +
+                    `Found on lines: ${lineNumbers.join(', ')}`
+                  );
                 }
               } catch (error) {
                 console.error(`Error processing file ${file.filename}:`, error);
                 core.setFailed(`Error processing file ${file.filename}: ${error.message}`);
               }
             }
-            
-                
+
+
       - name: Verify Changes and Auto-resolve Comments
         if: github.event.action == 'synchronize' || github.event.action == 'opened'
         uses: actions/github-script@v7
