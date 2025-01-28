@@ -75,21 +75,62 @@ jobs:
             }
 
             async function checkFileContent(github, context, file, content, lines, fileExt) {
-              // Security Checks
-              if (content.includes('innerHTML') || content.includes('bypassSecurityTrust')) {
-                await createComment(
-                  github,
-                  context,
-                  file,
-                  lines.findIndex(line => line.includes('innerHTML')) + 1,
-                  'critical',
-                  'Security Risk',
-                  'Potential XSS vulnerability detected. Use Angular\'s built-in sanitization.'
-                );
+              // Only process specific file extensions
+              const allowedExtensions = ['ts', 'js', 'html', 'scss', 'css'];
+              if (!allowedExtensions.includes(fileExt)) {
+                return;
               }
 
-              // TypeScript Specific Checks
-              if (fileExt === 'ts') {
+              // Skip checks for workflow files and test files
+              if (file.filename.includes('.github/workflows/') || 
+                  file.filename.includes('.spec.') || 
+                  file.filename.includes('test.')) {
+                return;
+              }
+
+              // Security Checks - for script and template files
+              if (fileExt === 'ts' || fileExt === 'js' || fileExt === 'html') {
+                const securityRisks = [];
+                const lines = content.split('\n');
+                
+                lines.forEach((line, index) => {
+                  // Check for innerHTML usage in actual DOM manipulation
+                  if (line.match(/\.[a-zA-Z]+\.innerHTML\s*=/) || 
+                      line.match(/\[innerHTML\]\s*=/) || 
+                      line.match(/innerHTML\s*=\s*['"]/)) {
+                    securityRisks.push({
+                      line: index + 1,
+                      risk: 'innerHTML'
+                    });
+                  }
+                  
+                  // Check for DomSanitizer bypass
+                  if (line.match(/bypassSecurityTrust\w+\s*\(/) &&
+                      !line.includes('// sanitized') && 
+                      !line.includes('/* sanitized */')) {
+                    securityRisks.push({
+                      line: index + 1,
+                      risk: 'bypassSecurityTrust'
+                    });
+                  }
+                });
+
+                // Report each security risk found
+                for (const risk of securityRisks) {
+                  await createComment(
+                    github,
+                    context,
+                    file,
+                    risk.line,
+                    'critical',
+                    'Security Risk',
+                    `Potential XSS vulnerability detected: ${risk.risk}. Use Angular's built-in sanitization. If this is intentional, add a comment '// sanitized' to suppress this warning.`
+                  );
+                }
+              }
+
+              // Script Specific Checks (TypeScript and JavaScript)
+              if (fileExt === 'ts' || fileExt === 'js') {
                 await checkTypeScriptFile(github, context, file, content, lines);
               }
 
@@ -105,6 +146,8 @@ jobs:
             }
 
             async function checkTypeScriptFile(github, context, file, content, lines) {
+              const fileExt = file.filename.split('.').pop();
+              // Run these checks for both .ts and .js files
               // Observable Memory Leak Checks
               const subscriptions = content.match(/subscribe\s*\(/g);
               const hasUnsubscribe = content.includes('unsubscribe()') || 
@@ -211,10 +254,70 @@ jobs:
             });
 
             async function verifyFix(file, comment) {
-              const content = fs.readFileSync(file, 'utf8');
-              
-              // Verification rules remain the same
-              // ... (rest of the verification logic)
+              try {
+                const content = fs.readFileSync(file, 'utf8');
+                
+                // Extract the category from the comment body
+                const categoryMatch = comment.body.match(/\*\*(.*?)\*\*/);
+                if (!categoryMatch) return false;
+                
+                const category = categoryMatch[1];
+                
+                // Verification rules for different types of issues
+                const verificationRules = {
+                  'Security Risk': () => {
+                    return !content.includes('innerHTML') && 
+                           !content.includes('bypassSecurityTrust');
+                  },
+                  'Performance': () => {
+                    if (comment.body.includes('trackBy')) {
+                      const ngForLine = content.split('\n')
+                        .find(line => line.includes('*ngFor'));
+                      return ngForLine && ngForLine.includes('trackBy');
+                    }
+                    return false;
+                  },
+                  'Accessibility': () => {
+                    if (comment.body.includes('IMG')) {
+                      return !/<img[^>]*(?!alt=)[^>]*>/g.test(content);
+                    }
+                    if (comment.body.includes('BUTTON')) {
+                      return !/<button[^>]*>(?!\s*[^<]*[^<\s])[^>]*<\/button>/g.test(content);
+                    }
+                    if (comment.body.includes('INPUT')) {
+                      return !/<input[^>]*(?!aria-label|id=)[^>]*>/g.test(content);
+                    }
+                    return false;
+                  },
+                  'Memory Leak Risk': () => {
+                    return content.includes('takeUntil') || 
+                           content.includes('| async') ||
+                           (content.includes('unsubscribe()') && content.includes('ngOnDestroy'));
+                  },
+                  'Code Maintainability': () => {
+                    return content.includes('enum') || 
+                           content.match(/\w+\.\w+/g)?.some(ref => 
+                             ref.split('.')[1].toUpperCase() === ref.split('.')[1]
+                           );
+                  },
+                  'Performance Optimization': () => {
+                    return content.includes('ChangeDetectionStrategy.OnPush');
+                  },
+                  'Style Management': () => {
+                    return !/#[0-9a-fA-F]{3,6}/g.test(content);
+                  }
+                };
+                
+                // Get the verification function for this category
+                const verifyFunction = verificationRules[category];
+                if (!verifyFunction) return false;
+                
+                // Run the verification
+                return verifyFunction();
+              } catch (error) {
+                console.error(`Error verifying fix for file ${file}: ${error.message}`);
+                return false;
+              }
             }
 
             for (const comment of comments) {
