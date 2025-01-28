@@ -448,3 +448,4 @@ jobs:
             if (remainingCriticalIssues.length > 0) {
               core.setFailed('Critical issues must be resolved before merging.');
             }
+            
