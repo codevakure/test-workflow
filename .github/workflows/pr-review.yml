@@ -40,11 +40,20 @@ jobs:
             const fs = require("fs");
             
             let criticalIssuesFound = false;
+            let unresolvedCriticalIssues = 0;
             const criticalIssues = [];
 
+            // Create initial check run
+            const { data: check } = await github.rest.checks.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              name: "Ionic/Angular PR Review",
+              head_sha: context.payload.pull_request.head.sha,
+              status: "in_progress",
+              started_at: new Date().toISOString(),
+            });
+
             async function createComment(github, context, file, line, priority, category, message) {
-              const commentKey = `${file.filename}:${line}:${category}`;
-              
               const priorityEmoji = {
                 critical: "🚨 CRITICAL: ",
                 recommended: "💡 RECOMMENDED: ",
@@ -84,384 +93,44 @@ jobs:
               }
             }
 
-            async function checkFileContent(github, context, file, content, lines, fileExt) {
-              const allowedExtensions = ["ts", "js", "html", "scss", "css"];
-              if (!allowedExtensions.includes(fileExt)) {
-                return;
-              }
-
-              if (file.filename.includes(".github/workflows/") || 
-                  file.filename.includes(".spec.") || 
-                  file.filename.includes("test.")) {
-                return;
-              }
-
-              // Security Checks
-              if (fileExt === "ts" || fileExt === "js" || fileExt === "html") {
-                const securityRisks = [];
-                lines.forEach((line, index) => {
-                  if (line.match(/\.[a-zA-Z]+\.innerHTML\s*=/) || 
-                      line.match(/\[innerHTML\]\s*=/) || 
-                      line.match(/innerHTML\s*=\s*['"]/)) {
-                    securityRisks.push({
-                      line: index + 1,
-                      risk: "innerHTML",
-                    });
-                  }
-                  
-                  if (line.match(/bypassSecurityTrust\w+\s*\(/) &&
-                      !line.includes("// sanitized") && 
-                      !line.includes("/* sanitized */")) {
-                    securityRisks.push({
-                      line: index + 1,
-                      risk: "bypassSecurityTrust",
-                    });
-                  }
-                });
-
-                for (const risk of securityRisks) {
-                  await createComment(
-                    github,
-                    context,
-                    file,
-                    risk.line,
-                    "critical",
-                    "Security Risk",
-                    `Potential XSS vulnerability detected: ${risk.risk}. Use Angular's built-in sanitization. If this is intentional, add a comment '// sanitized' to suppress this warning.`
-                  );
-                }
-              }
-
-              if (fileExt === "ts" || fileExt === "js") {
-                await checkTypeScriptFile(github, context, file, content, lines);
-              }
-
-              if (fileExt === "html") {
-                await checkHtmlFile(github, context, file, content, lines);
-              }
-
-              if (fileExt === "scss" || fileExt === "css") {
-                await checkStyleFile(github, context, file, content, lines);
-              }
-            }
-
-            async function checkTypeScriptFile(github, context, file, content, lines) {
-              // Observable Memory Leak Checks
-              const subscriptions = content.match(/subscribe\s*\(/g);
-              const hasUnsubscribe = content.includes("unsubscribe()") || 
-                                   content.includes("takeUntil") ||
-                                   content.includes("| async");
-              
-              if (subscriptions && !hasUnsubscribe) {
-                const subscribeLineIndex = lines.findIndex(line => line.includes("subscribe")) + 1;
-                const message = [
-                  "Subscription not properly managed. Use one of these patterns:",
-                  "",
-                  "```typescript",
-                  "// Option 1: Using takeUntil",
-                  "private destroy$ = new Subject<void>();",
-                  "",
-                  "ngOnInit() {",
-                  "  this.someObservable$.pipe(",
-                  "    takeUntil(this.destroy$)",
-                  "  ).subscribe(data => ...);",
-                  "}",
-                  "",
-                  "ngOnDestroy() {",
-                  "  this.destroy$.next();",
-                  "  this.destroy$.complete();",
-                  "}",
-                  "",
-                  "// Option 2: Using async pipe in template",
-                  "{{ data$ | async }}",
-                  "",
-                  "// Option 3: Manual unsubscription",
-                  "private subscription: Subscription;",
-                  "",
-                  "ngOnInit() {",
-                  "  this.subscription = this.data$.subscribe(...);",
-                  "}",
-                  "",
-                  "ngOnDestroy() {",
-                  "  this.subscription?.unsubscribe();",
-                  "}",
-                  "```"
-                ].join("\n");
-
-                await createComment(
-                  github,
-                  context,
-                  file,
-                  subscribeLineIndex,
-                  "critical",
-                  "Memory Leak Risk",
-                  message
-                );
-              }
-
-              // Change Detection Strategy Check
-              if (content.includes("@Component") && !content.includes("ChangeDetectionStrategy.OnPush")) {
-                const componentLineIndex = lines.findIndex(line => line.includes("@Component")) + 1;
-                const message = [
-                  "Consider using OnPush change detection strategy for better performance:",
-                  "",
-                  "```typescript",
-                  "@Component({",
-                  "  // ...",
-                  "  changeDetection: ChangeDetectionStrategy.OnPush",
-                  "})",
-                  "```"
-                ].join("\n");
-
-                await createComment(
-                  github,
-                  context,
-                  file,
-                  componentLineIndex,
-                  "recommended",
-                  "Performance Optimization",
-                  message
-                );
-              }
-
-              // Magic Values Check
-              const magicNumberRegex = /=\s*[0-9]+(?![0-9]*\s*[xX])/;
-              const magicStringRegex = /=\s*['"][^'"]+['"]/;
-              
-              lines.forEach(async (line, index) => {
-                if ((magicNumberRegex.test(line) || magicStringRegex.test(line)) && 
-                    !line.includes("const") && 
-                    !line.trim().startsWith("//")) {
-                  await createComment(
-                    github,
-                    context,
-                    file,
-                    index + 1,
-                    "recommended",
-                    "Code Maintainability",
-                    "Consider using an enum or constant for this value to improve maintainability."
-                  );
-                }
-              });
-            }
-
-            async function checkHtmlFile(github, context, file, content, lines) {
-              // Performance Check - ngFor
-              if (content.includes("*ngFor") && !content.includes("trackBy")) {
-                const ngForLineIndex = lines.findIndex(line => line.includes("*ngFor")) + 1;
-                const message = [
-                  "Add trackBy function to improve performance with *ngFor:",
-                  "",
-                  "```typescript",
-                  "// In your component:",
-                  "trackByFn(index: number, item: any): number {",
-                  "  return item.id; // or another unique identifier",
-                  "}",
-                  "```",
-                  "",
-                  "```html",
-                  "<!-- In your template: -->",
-                  '<div *ngFor="let item of items; trackBy: trackByFn">',
-                  "```"
-                ].join("\n");
-
-                await createComment(
-                  github,
-                  context,
-                  file,
-                  ngForLineIndex,
-                  "recommended",
-                  "Performance",
-                  message
-                );
-              }
-
-              // Accessibility Checks
-              const imgWithoutAlt = /<img[^>]*(?!alt=)[^>]*>/g;
-              const buttonWithoutLabel = /<button[^>]*>(?!\s*[^<]*[^<\s])[^>]*<\/button>/g;
-              const inputWithoutLabel = /<input[^>]*(?!aria-label|id=)[^>]*>/g;
-
-              if (imgWithoutAlt.test(content)) {
-                const lineNumber = lines.findIndex(line => imgWithoutAlt.test(line)) + 1;
-                await createComment(
-                  github,
-                  context,
-                  file,
-                  lineNumber,
-                  "critical",
-                  "Accessibility",
-                  "IMG elements must have alt attributes for screen readers."
-                );
-              }
-
-              if (buttonWithoutLabel.test(content)) {
-                const lineNumber = lines.findIndex(line => buttonWithoutLabel.test(line)) + 1;
-                await createComment(
-                  github,
-                  context,
-                  file,
-                  lineNumber,
-                  "critical",
-                  "Accessibility",
-                  "BUTTON elements must have descriptive text content or an aria-label."
-                );
-              }
-
-              if (inputWithoutLabel.test(content)) {
-                const lineNumber = lines.findIndex(line => inputWithoutLabel.test(line)) + 1;
-                await createComment(
-                  github,
-                  context,
-                  file,
-                  lineNumber,
-                  "critical",
-                  "Accessibility",
-                  "INPUT elements must have associated labels or aria-labels."
-                );
-              }
-            }
-
-            async function checkStyleFile(github, context, file, content, lines) {
-              const commentedLines = new Set();
-              
-              const { data: existingComments } = await github.rest.pulls.listReviewComments({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                pull_number: context.payload.pull_request.number,
-              });
-              
-              existingComments
-                .filter(comment => comment.path === file.filename)
-                .forEach(comment => commentedLines.add(comment.line));
-
-              // Check for hardcoded colors
-              const hardcodedColors = content.match(/#[0-9a-fA-F]{3,6}/g);
-              if (hardcodedColors) {
-                const uniqueColorLines = new Map();
-                lines.forEach((line, index) => {
-                  hardcodedColors.forEach(color => {
-                    if (line.includes(color) && !uniqueColorLines.has(color)) {
-                      uniqueColorLines.set(color, index + 1);
-                    }
-                  });
-                });
-
-                for (const [color, lineNumber] of uniqueColorLines) {
-                  if (!commentedLines.has(lineNumber)) {
-                    const message = [
-                      "Consider using CSS variables for better maintainability:",
-                      "",
-                      "```css",
-                      ":root {",
-                      `  --color-primary: ${color};`,
-                      "}",
-                      "",
-                      ".your-class {",
-                      "  color: var(--color-primary);",
-                      "}",
-                      "```"
-                    ].join("\n");
-
-                    await createComment(
-                      github,
-                      context,
-                      file,
-                      lineNumber,
-                      "optional",
-                      "Style Management",
-                      message
-                    );
-                    commentedLines.add(lineNumber);
-                  }
-                }
-              }
-
-              // Check for !important usage
-              const importantLines = lines
-                .map((line, index) => ({ line, index }))
-                .filter(({ line }) => line.includes("!important"));
-
-              for (const { line, index } of importantLines) {
-                if (!commentedLines.has(index + 1)) {
-                  await createComment(
-                    github,
-                    context,
-                    file,
-                    index + 1,
-                    "recommended",
-                    "Style Management",
-                    "Avoid using !important as it makes styles harder to maintain. Consider refactoring the CSS specificity instead."
-                  );
-                  commentedLines.add(index + 1);
-                }
-              }
-            }
-
-            // Create initial check run
-            const { data: check } = await github.rest.checks.create({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              name: "Ionic/Angular PR Review",
-              head_sha: context.payload.pull_request.head.sha,
-              status: "in_progress",
-              started_at: new Date().toISOString(),
-            });
-
-            // Process all files in the PR
-            const { data: files } = await github.rest.pulls.listFiles({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              pull_number: context.payload.pull_request.number,
-            });
-
-            for (const file of files) {
+            async function isManuallyResolved(github, context, comment) {
               try {
-                const content = fs.readFileSync(file.filename, "utf8");
-                const lines = content.split("\n");
-                const fileExt = file.filename.split(".").pop();
-                
-                await checkFileContent(github, context, file, content, lines, fileExt);
+                // Check for resolution keywords in subsequent comments
+                const { data: replies } = await github.rest.pulls.listReviewComments({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  pull_number: context.payload.pull_request.number,
+                  since: comment.created_at,
+                });
+
+                const hasResolutionReply = replies.some(reply => 
+                  reply.in_reply_to_id === comment.id && 
+                  /resolved|fixed|done|completed/i.test(reply.body)
+                );
+
+                if (hasResolutionReply) return true;
+
+                // Check for resolution reactions
+                const { data: reactions } = await github.rest.reactions.listForPullRequestReviewComment({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  comment_id: comment.id,
+                });
+
+                return reactions.some(reaction => 
+                  reaction.content === '+1' || 
+                  reaction.content === 'hooray'
+                );
               } catch (error) {
-                console.error(`Error processing file ${file.filename}: ${error.message}`);
+                console.error(`Error checking manual resolution: ${error.message}`);
+                return false;
               }
             }
 
-            // Prepare check output
-            const checkOutput = {
-              title: criticalIssuesFound ? "🚨 Critical Issues Found" : "✅ No Critical Issues",
-              summary: criticalIssuesFound 
-                ? `The following critical issues must be resolved before merging:\n\n${criticalIssues.map(issue => `- ${issue}`).join("\n")}`
-                : "No critical issues found in the code review.",
-            };
-
-            // Update check run status
-            await github.rest.checks.update({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              check_run_id: check.id,
-              status: "completed",
-              conclusion: criticalIssuesFound ? "failure" : "success",
-              completed_at: new Date().toISOString(),
-              output: checkOutput,
-            });
-
-            if (criticalIssuesFound) {
-              core.setFailed("Critical issues must be resolved before merging.");
-            }
-
-      - name: Verify Changes and Auto-resolve Comments
-        if: github.event.action == 'synchronize'
-        uses: actions/github-script@v7
-        continue-on-error: true
-        with:
-          script: |
-            const fs = require("fs");
-            
             async function verifyFix(file, comment) {
               try {
                 const content = fs.readFileSync(file, "utf8");
                 const category = comment.body.match(/\*\*(.*?)\*\*/)?.[1];
-                
                 if (!category) return false;
 
                 const verificationRules = {
@@ -503,75 +172,130 @@ jobs:
 
                 return verificationRules[category]?.(content) ?? false;
               } catch (error) {
-                console.error(`Error verifying fix for file ${file}: ${error.message}`);
+                console.error(`Error verifying fix: ${error.message}`);
                 return false;
               }
             }
 
-            const { data: comments } = await github.rest.pulls.listReviewComments({
+            // Function to process comments and update status
+            async function processComments() {
+              const { data: comments } = await github.rest.pulls.listReviewComments({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                pull_number: context.payload.pull_request.number,
+              });
+
+              // Track which files have been modified since comments were made
+              const { data: files } = await github.rest.pulls.listFiles({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                pull_number: context.payload.pull_request.number,
+              });
+
+              const modifiedFiles = new Set(files.map(file => file.filename));
+
+              for (const comment of comments) {
+                try {
+                  // Skip already resolved comments
+                  if (comment.body.includes("✅ Issue resolved")) continue;
+
+                  // Only process our automated comments
+                  if (!comment.body.includes("CRITICAL:") && 
+                      !comment.body.includes("RECOMMENDED:") && 
+                      !comment.body.includes("OPTIONAL:")) continue;
+
+                  // Skip comments on files that haven't been modified
+                  if (!modifiedFiles.has(comment.path)) {
+                    if (comment.body.includes("CRITICAL:")) {
+                      unresolvedCriticalIssues++;
+                    }
+                    continue;
+                  }
+
+                  const isFixed = await verifyFix(comment.path, comment);
+                  
+                  if (isFixed) {
+                    // Get comment reactions to check if it was manually resolved
+                    const { data: reactions } = await github.rest.reactions.listForPullRequestReviewComment({
+                      owner: context.repo.owner,
+                      repo: context.repo.repo,
+                      comment_id: comment.id,
+                    });
+
+                    const hasResolutionReaction = reactions.some(reaction => 
+                      reaction.content === '+1' || reaction.content === 'hooray'
+                    );
+
+                    // If not manually resolved, mark as auto-resolved
+                    if (!hasResolutionReaction) {
+                      await github.rest.pulls.updateReviewComment({
+                        owner: context.repo.owner,
+                        repo: context.repo.repo,
+                        comment_id: comment.id,
+                        body: `${comment.body}\n\n✅ Issue resolved automatically based on implemented changes.`,
+                      });
+
+                      // Add a visual checkmark reaction
+                      await github.rest.reactions.createForPullRequestReviewComment({
+                        owner: context.repo.owner,
+                        repo: context.repo.repo,
+                        comment_id: comment.id,
+                        content: 'hooray',
+                      });
+                    }
+                  } else if (comment.body.includes("CRITICAL:")) {
+                    unresolvedCriticalIssues++;
+                  }
+                } catch (error) {
+                  console.error(`Error processing comment: ${error.message}`);
+                  // Only increment unresolved issues for critical ones
+                  if (comment.body.includes("CRITICAL:")) {
+                    unresolvedCriticalIssues++;
+                  }
+                }
+              }
+
+              // Update check status based on latest findings
+              const checkOutput = {
+                title: unresolvedCriticalIssues > 0 ? "🚨 Critical Issues Found" : "✅ No Critical Issues",
+                summary: unresolvedCriticalIssues > 0 
+                  ? `${unresolvedCriticalIssues} critical issues must be resolved before merging.`
+                  : "No critical issues found in the code review.",
+              };
+
+              await github.rest.checks.update({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                check_run_id: check.id,
+                status: "completed",
+                conclusion: unresolvedCriticalIssues > 0 ? "failure" : "success",
+                completed_at: new Date().toISOString(),
+                output: checkOutput,
+              });
+
+              if (unresolvedCriticalIssues > 0) {
+                core.setFailed("Critical issues must be resolved before merging.");
+              }
+            }
+
+            // Process all files in the PR
+            const { data: files } = await github.rest.pulls.listFiles({
               owner: context.repo.owner,
               repo: context.repo.repo,
               pull_number: context.payload.pull_request.number,
             });
 
-            let unresolvedCriticalIssues = 0;
-
-            for (const comment of comments) {
+            for (const file of files) {
               try {
-                if (!comment.body.includes("CRITICAL")) continue;
-
-                const isFixed = await verifyFix(comment.path, comment);
+                const content = fs.readFileSync(file.filename, "utf8");
+                const lines = content.split("\n");
+                const fileExt = file.filename.split(".").pop();
                 
-                if (isFixed) {
-                  await github.rest.pulls.updateReviewComment({
-                    owner: context.repo.owner,
-                    repo: context.repo.repo,
-                    comment_id: comment.id,
-                    body: `${comment.body}\n\n✅ Issue resolved automatically based on implemented changes.`,
-                  });
-                } else {
-                  unresolvedCriticalIssues++;
-                }
+                await checkFileContent(github, context, file, content, lines, fileExt);
               } catch (error) {
-                console.error(`Error processing comment: ${error.message}`);
-                unresolvedCriticalIssues++;
+                console.error(`Error processing file ${file.filename}: ${error.message}`);
               }
             }
 
-            const checkTitle = unresolvedCriticalIssues > 0 
-              ? "🚨 Unresolved Critical Issues" 
-              : "✅ All Critical Issues Resolved";
-
-            const checkSummary = unresolvedCriticalIssues > 0
-              ? `${unresolvedCriticalIssues} critical issues remain unresolved.`
-              : "All critical issues have been resolved.";
-
-            // Update check run status
-            const { data: checkRuns } = await github.rest.checks.listForRef({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              ref: context.payload.pull_request.head.sha,
-            });
-
-            const existingCheck = checkRuns.check_runs.find(check => 
-              check.name === "Ionic/Angular PR Review"
-            );
-
-            if (existingCheck) {
-              await github.rest.checks.update({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                check_run_id: existingCheck.id,
-                status: "completed",
-                conclusion: unresolvedCriticalIssues > 0 ? "failure" : "success",
-                completed_at: new Date().toISOString(),
-                output: {
-                  title: checkTitle,
-                  summary: checkSummary,
-                },
-              });
-            }
-
-            if (unresolvedCriticalIssues > 0) {
-              core.setFailed("Critical issues must be resolved before merging.");
-            }
+            // Process and verify comments after all files are checked
+            await processComments();
