@@ -540,9 +540,40 @@ jobs:
               pull_number: context.issue.number,
             });
 
-            const criticalIssues = remainingComments.data.filter(comment => 
-              comment.body.includes('🚨 CRITICAL')
-            );
+            // Get the review threads to check for resolved status
+            const { data: reviewThreads } = await github.rest.pulls.listReviewThreads({
+              ...context.repo,
+              pull_number: context.issue.number,
+            });
+
+            // Create a Set of resolved comment IDs from threads
+            const resolvedCommentIds = new Set();
+            reviewThreads.forEach(thread => {
+              if (thread.resolved) {
+                thread.comments.forEach(comment => {
+                  resolvedCommentIds.add(comment.id);
+                });
+              }
+            });
+
+            const criticalIssues = remainingComments.data.filter(comment => {
+              // Skip if the comment is in a resolved thread
+              if (resolvedCommentIds.has(comment.id)) {
+                return false;
+              }
+              
+              // Skip if there are resolution replies
+              const hasResolutionReply = remainingComments.data.some(reply => 
+                reply.in_reply_to === comment.id && 
+                (
+                  /resolved|fixed|completed|done|Issue resolved/i.test(reply.body) ||
+                  reply.body.includes('✅') ||
+                  reply.body.includes('has been fixed')
+                )
+              );
+
+              return !hasResolutionReply && comment.body.includes('🚨 CRITICAL');
+            });
 
             if (criticalIssues.length > 0) {
               core.info('Found remaining critical issues:');
