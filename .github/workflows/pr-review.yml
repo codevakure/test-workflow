@@ -469,15 +469,33 @@ jobs:
             // Track resolved comments
             const resolvedCommentIds = new Set();
 
+            // Get review threads to check for resolved conversations
+            const { data: reviewThreads } = await github.rest.pulls.listReviewThreads({
+              ...context.repo,
+              pull_number: context.issue.number,
+            });
+
             // Process each comment
             for (const comment of comments) {
-              // Skip already resolved comments
-              if (comment.body.includes('✅')) {
-                resolvedCommentIds.add(comment.id);
-                continue;
-              }
-              
               try {
+                // Find if comment belongs to a resolved thread
+                const thread = reviewThreads.find(thread => 
+                  thread.comments.some(c => c.id === comment.id)
+                );
+                
+                if (thread?.isResolved) {
+                  await resolveComment(comment, 'Issue resolved - Thread marked as resolved');
+                  continue;
+                }
+
+                // Skip if already has a resolution comment
+                if (comments.some(reply => 
+                  reply.in_reply_to === comment.id && 
+                  reply.body.includes('✅')
+                )) {
+                  continue;
+                }
+
                 const isFixed = await verifyFix(comment, resolvedCommentIds);
                 if (isFixed) {
                   core.info(`Resolved comment in ${comment.path} at line ${comment.line}`);
@@ -485,6 +503,37 @@ jobs:
               } catch (error) {
                 console.error('Error processing comment:', error);
               }
+            }
+
+            // Re-fetch comments to get latest state including our new resolution comments
+            const { data: updatedComments } = await github.rest.pulls.listReviewComments({
+              ...context.repo,
+              pull_number: context.issue.number,
+            });
+
+            // Check remaining critical issues
+            const criticalIssues = updatedComments.filter(comment => {
+              // Skip if not a critical issue
+              if (!comment.body.includes('🚨 CRITICAL')) return false;
+
+              // Check if this comment or its thread is resolved
+              const thread = reviewThreads.find(thread => 
+                thread.comments.some(c => c.id === comment.id)
+              );
+              
+              if (thread?.isResolved) return false;
+
+              // Check if has resolution reply
+              const hasResolution = updatedComments.some(reply => 
+                reply.in_reply_to === comment.id && 
+                reply.body.includes('✅')
+              );
+
+              return !hasResolution;
+            });
+
+            if (criticalIssues.length > 0) {
+              core.setFailed(`${criticalIssues.length} critical issues must be resolved before merging.`);
             }
 
             // Check remaining critical issues
