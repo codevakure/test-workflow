@@ -61,9 +61,6 @@ jobs:
               pull_number: context.issue.number,
             });
 
-            // Create a map to track template strings usage
-            const templateStringsMap = new Map();
-
             async function createComment(file, line, priority, category, message) {
               const priorityEmoji = {
                 critical: '🚨 CRITICAL: ',
@@ -182,12 +179,10 @@ jobs:
                 const methodName = method.match(/(\w+)\s*\(/)[1];
                 const methodContent = method.match(/{([^}]*)}/)[1].trim();
                 
-                // Skip constructor if it's meant to be empty
                 if (methodName === 'constructor' && methodContent === '') {
                   continue;
                 }
                 
-                // Check if method is empty or only has comments
                 const isEmptyMethod = !methodContent || methodContent.split('\n')
                   .every(line => line.trim() === '' || line.trim().startsWith('//'));
                 
@@ -201,10 +196,8 @@ jobs:
             }
 
             async function checkHtmlFile(file, content, lines) {
-              // Check template strings for potential enum usage
               await checkTemplateStrings(file, content, lines);
 
-              // Check performance issues in templates
               const ngForLines = lines
                 .map((line, index) => ({ line, index: index + 1 }))
                 .filter(({ line }) => {
@@ -379,15 +372,13 @@ jobs:
                 return true;
               }
 
-              // Handle manual resolutions
+              // Check if comment has been resolved by reviewing the conversation
+              // Handle manual resolutions by checking conversation
               const conversationResolved = comments.some(reply => 
-                (reply.in_reply_to === comment.id || reply.id === comment.id) && 
-                (
-                  /resolved|fixed|completed|done/i.test(reply.body) ||
-                  reply.body.includes('marked conversation as resolved') ||
-                  reply.body.includes('Resolved conversation') ||
-                  reply.state === 'resolved'
-                )
+                reply.in_reply_to === comment.id && 
+                (/resolved|fixed|completed|done/i.test(reply.body) ||
+                 reply.body.includes('✅') ||
+                 reply.state === 'resolved')
               );
               
               if (conversationResolved) {
@@ -439,7 +430,6 @@ jobs:
                 },
                 'Template Type Safety': () => {
                   const line = fileInfo.lines[comment.line - 1] || '';
-                  // Check if string literals have been replaced with enum
                   return !line.includes("'") && !line.includes('"') && 
                          line.includes('Type.') && line.includes('enum');
                 }
@@ -466,39 +456,9 @@ jobs:
               return false;
             }
 
-            // Re-fetch comments to get latest state including our new resolution comments
-            const { data: updatedComments } = await github.rest.pulls.listReviewComments({
-              ...context.repo,
-              pull_number: context.issue.number,
-            });
-
-            // Get review threads to check for resolved conversations
-            const { data: reviewThreads } = await github.rest.pulls.listReviewThreads({
-              ...context.repo,
-              pull_number: context.issue.number,
-            });
-
             // Process each comment
             for (const comment of comments) {
               try {
-                // Find if comment belongs to a resolved thread
-                const thread = reviewThreads.find(thread => 
-                  thread.comments.some(c => c.id === comment.id)
-                );
-                
-                if (thread?.isResolved) {
-                  await github.rest.pulls.createReviewComment({
-                    ...context.repo,
-                    pull_number: context.issue.number,
-                    commit_id: headSha,
-                    path: comment.path,
-                    line: comment.line,
-                    body: 'Issue resolved - Thread marked as resolved',
-                    in_reply_to: comment.id
-                  });
-                  continue;
-                }
-
                 // Skip if already has a resolution comment
                 if (comments.some(reply => 
                   reply.in_reply_to === comment.id && 
@@ -516,22 +476,22 @@ jobs:
               }
             }
 
+            // Re-fetch comments to get latest state including our new resolution comments
+            const { data: updatedComments } = await github.rest.pulls.listReviewComments({
+              ...context.repo,
+              pull_number: context.issue.number,
+            });
+
             // Check for remaining unresolved critical issues
             let remainingCriticalIssues = updatedComments.filter(comment => {
               // Skip if not a critical issue
               if (!comment.body.includes('🚨 CRITICAL')) return false;
 
-              // Check if this comment or its thread is resolved
-              const thread = reviewThreads.find(thread => 
-                thread.comments.some(c => c.id === comment.id)
-              );
-              
-              if (thread?.isResolved) return false;
-
-              // Check if has resolution reply
+              // Skip if resolved
               const hasResolution = updatedComments.some(reply => 
                 reply.in_reply_to === comment.id && 
-                reply.body.includes('✅')
+                (reply.body.includes('✅') || 
+                 /resolved|fixed|completed|done/i.test(reply.body))
               );
 
               return !hasResolution;
