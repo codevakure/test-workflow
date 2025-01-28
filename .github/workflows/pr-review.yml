@@ -383,6 +383,15 @@ jobs:
                 pull_number: context.issue.number,
               });
 
+              // Get full PR details to check for resolved comments
+              const { data: pullRequest } = await github.rest.pulls.get({
+                ...context.repo,
+                pull_number: context.issue.number,
+                headers: {
+                  accept: 'application/vnd.github.comfort-fade-preview+json'
+                }
+              });
+
               // Get changed files
               const { data: files } = await github.rest.pulls.listFiles({
                 ...context.repo,
@@ -393,11 +402,11 @@ jobs:
               const resolvedCommentIds = new Set();
               const outdatedCommentIds = new Set();
 
-              // Track resolved comments from reviews
-              comments.forEach(comment => {
+              // Function to check if a comment path and line match a resolved comment
+              function isCommentResolved(comment) {
                 // Check if comment is outdated
                 if (comment.position === null) {
-                  outdatedCommentIds.add(comment.id);
+                  return true;
                 }
 
                 // Check for resolution replies
@@ -411,13 +420,31 @@ jobs:
                 );
 
                 if (hasResolutionReply) {
-                  resolvedCommentIds.add(comment.id);
+                  return true;
                 }
 
                 // Check if the comment's review was dismissed
                 const parentReview = reviews.find(review => review.id === comment.pull_request_review_id);
                 if (parentReview && parentReview.state === 'DISMISSED') {
+                  return true;
+                }
+
+                // Check if comment is in a resolved thread
+                const reviewThreads = pullRequest.review_threads || [];
+                return reviewThreads.some(thread => 
+                  thread.comments.some(threadComment => 
+                    threadComment.id === comment.id && thread.resolved
+                  )
+                );
+              }
+
+              // Track resolved and outdated comments
+              comments.forEach(comment => {
+                if (isCommentResolved(comment)) {
                   resolvedCommentIds.add(comment.id);
+                }
+                if (comment.position === null) {
+                  outdatedCommentIds.add(comment.id);
                 }
               });
 
@@ -449,12 +476,23 @@ jobs:
               });
 
               // Filter for remaining critical issues
-              const criticalIssues = finalComments.filter(comment => 
-                comment.user.login === 'github-actions[bot]' &&
-                comment.body.includes('🚨 CRITICAL') &&
-                !resolvedCommentIds.has(comment.id) &&
-                !outdatedCommentIds.has(comment.id)
-              );
+              const criticalIssues = finalComments.filter(comment => {
+                if (comment.user.login !== 'github-actions[bot]' || !comment.body.includes('🚨 CRITICAL')) {
+                  return false;
+                }
+                
+                // Check if this comment has been resolved
+                if (resolvedCommentIds.has(comment.id) || outdatedCommentIds.has(comment.id)) {
+                  return false;
+                }
+
+                // Additional check for manual resolution
+                if (isCommentResolved(comment)) {
+                  return false;
+                }
+
+                return true;
+              });
 
               // Log remaining issues
               if (criticalIssues.length > 0) {
