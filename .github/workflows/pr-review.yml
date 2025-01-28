@@ -106,6 +106,53 @@ jobs:
             }
 
             async function checkTypeScriptFile(file, content, lines) {
+              // Angular Component Checks
+              if (content.includes('@Component')) {
+                // Check for ChangeDetectionStrategy
+                if (!content.includes('ChangeDetectionStrategy.OnPush')) {
+                  await createComment(file, 1, 'recommended', 'Performance Optimization',
+                    'Consider using ChangeDetectionStrategy.OnPush for better performance:\n```typescript\nimport { ChangeDetectionStrategy } from \'@angular/core\';\n\n@Component({\n  // ...\n  changeDetection: ChangeDetectionStrategy.OnPush\n})\n```'
+                  );
+                }
+
+                // Check for standalone components
+                if (content.includes('standalone: false') || !content.includes('standalone:')) {
+                  await createComment(file, 1, 'recommended', 'Modern Angular Practices',
+                    'Consider using standalone components for better tree-shaking and modularity:\n```typescript\n@Component({\n  // ...\n  standalone: true,\n  imports: [CommonModule, IonicModule, ...]\n})\n```'
+                  );
+                }
+
+                // Check for ViewEncapsulation
+                if (!content.includes('ViewEncapsulation')) {
+                  await createComment(file, 1, 'recommended', 'Component Configuration',
+                    'Consider explicitly setting ViewEncapsulation for better style control:\n```typescript\nimport { ViewEncapsulation } from \'@angular/core\';\n\n@Component({\n  // ...\n  encapsulation: ViewEncapsulation.Emulated // or .ShadowDom for Ionic\n})\n```'
+                  );
+                }
+
+                // Check for lifecycle interfaces
+                const lifecycleHooks = ['OnInit', 'OnDestroy', 'AfterViewInit', 'OnChanges'];
+                const implementedHooks = lifecycleHooks.filter(hook => content.includes(hook));
+                const declaredInterfaces = content.includes('implements') ? 
+                  content.match(/implements\s+([^{]+)/)[1].split(',').map(i => i.trim()) : [];
+                
+                const missingInterfaces = implementedHooks.filter(hook => 
+                  !declaredInterfaces.includes(hook)
+                );
+
+                if (missingInterfaces.length > 0) {
+                  await createComment(file, 1, 'recommended', 'Type Safety',
+                    `Implement interfaces for used lifecycle hooks:\n\`\`\`typescript\nexport class HomePage implements ${missingInterfaces.join(', ')} {\n}\n\`\`\``
+                  );
+                }
+
+                // Empty component checks
+                if (content.match(/export\s+class\s+\w+\s*{[\s\n]*constructor\(\)\s*{}[\s\n]*}/)) {
+                  await createComment(file, 1, 'optional', 'Component Structure',
+                    'Consider adding proper lifecycle hooks and documentation for this component:\n```typescript\nexport class HomePage implements OnInit {\n  constructor() {}\n\n  ngOnInit() {\n    // Initialize component\n  }\n}\n```'
+                  );
+                }
+              }
+
               // Observable Memory Leak Checks
               const subscribeLines = lines
                 .map((line, index) => ({ line, index: index + 1 }))
@@ -262,75 +309,129 @@ jobs:
               pull_number: context.issue.number,
             });
 
-            async function verifyFix(file, comment) {
-              try {
-                const content = fs.readFileSync(file, 'utf8');
-                const lines = content.split('\n');
-                
-                // Handle deleted files or lines
-                if (!fs.existsSync(file) || comment.line > lines.length) {
-                  return true; // Consider it resolved if file or line no longer exists
+            // Get the list of files and their current content
+            const { data: files } = await github.rest.pulls.listFiles({
+              ...context.repo,
+              pull_number: context.issue.number,
+            });
+
+            // Create a map of file paths to their current content
+            const fileContents = new Map();
+            for (const file of files) {
+              if (file.status !== 'removed') {
+                try {
+                  const content = fs.readFileSync(file.filename, 'utf8');
+                  fileContents.set(file.filename, {
+                    content,
+                    lines: content.split('\n'),
+                    status: file.status
+                  });
+                } catch (error) {
+                  console.error(`Error reading file ${file.filename}: ${error}`);
                 }
-
-                // Verification rules
-                const rules = {
-                  'Security Risk': () => !content.includes('innerHTML') && !content.includes('bypassSecurityTrust'),
-                  'Performance': () => comment.body.includes('trackBy') ? content.includes('trackBy') : true,
-                  'Accessibility': () => {
-                    const line = lines[comment.line - 1] || '';
-                    if (comment.body.includes('IMG')) return !/<img[^>]*(?!alt=)[^>]*>/.test(line);
-                    if (comment.body.includes('BUTTON')) return !/<button[^>]*>(?!\s*[^<]*[^<\s])[^>]*<\/button>/.test(line);
-                    if (comment.body.includes('INPUT')) return !/<input[^>]*(?!aria-label|id=)[^>]*>/.test(line);
-                    return true;
-                  },
-                  'Memory Leak Risk': () => {
-                    return content.includes('takeUntil') || 
-                           content.includes('| async') ||
-                           (content.includes('unsubscribe()') && content.includes('ngOnDestroy'));
-                  },
-                  'Style Management': () => {
-                    const line = lines[comment.line - 1] || '';
-                    return !/#[0-9a-fA-F]{3,6}/.test(line);
-                  }
-                };
-
-                // Find matching rule and verify
-                const category = Object.keys(rules).find(key => comment.body.includes(key));
-                return category ? rules[category]() : false;
-              } catch (error) {
-                console.error(`Error verifying fix for ${file}: ${error}`);
-                return false;
               }
+            }
+
+            async function verifyFix(comment) {
+              const file = comment.path;
+              const fileInfo = fileContents.get(file);
+              
+              // Handle removed files
+              if (!fileInfo) {
+                await github.rest.pulls.createReviewComment({
+                  ...context.repo,
+                  pull_number: context.issue.number,
+                  commit_id: latestCommitSha,
+                  path: comment.path,
+                  line: comment.line,
+                  body: '✅ Issue resolved - File has been removed.',
+                  in_reply_to: comment.id
+                });
+                return true;
+              }
+
+              const { content, lines, status } = fileInfo;
+              
+              // Handle removed or changed lines
+              if (comment.line > lines.length || 
+                  (status === 'modified' && !lines[comment.line - 1]?.includes(comment.original_line))) {
+                await github.rest.pulls.createReviewComment({
+                  ...context.repo,
+                  pull_number: context.issue.number,
+                  commit_id: latestCommitSha,
+                  path: comment.path,
+                  line: comment.line,
+                  body: '✅ Issue resolved - Code has been modified or removed.',
+                  in_reply_to: comment.id
+                });
+                return true;
+              }
+
+              // Handle manual resolutions (comments with 'Resolved' or similar keywords)
+              const conversationResolved = comments.some(reply => 
+                reply.in_reply_to === comment.id && 
+                /resolved|fixed|completed|done/i.test(reply.body)
+              );
+              
+              if (conversationResolved) {
+                await github.rest.pulls.createReviewComment({
+                  ...context.repo,
+                  pull_number: context.issue.number,
+                  commit_id: latestCommitSha,
+                  path: comment.path,
+                  line: comment.line,
+                  body: '✅ Issue resolved - Manually marked as resolved.',
+                  in_reply_to: comment.id
+                });
+                return true;
+              }
+
+              // Verification rules for specific issues
+              const rules = {
+                'Responsive Design': () => {
+                  const line = lines[comment.line - 1] || '';
+                  return line.includes('size-sm') || 
+                         line.includes('size-md') || 
+                         line.includes('size-lg') || 
+                         line.includes('size-xl');
+                },
+                'Performance': () => {
+                  if (comment.body.includes('trackBy')) {
+                    return content.includes('trackBy');
+                  }
+                  return false;
+                },
+                // Add other specific rules...
+              };
+
+              const category = Object.keys(rules).find(key => comment.body.includes(key));
+              return category ? rules[category]() : false;
             }
 
             // Process each comment
             for (const comment of comments) {
               try {
-                if (comment.body.includes('✅')) continue; // Skip already resolved comments
+                // Skip already resolved comments
+                if (comment.body.includes('✅')) continue;
                 
-                const isFixed = await verifyFix(comment.path, comment);
-                
+                const isFixed = await verifyFix(comment);
                 if (isFixed) {
-                  // Create resolution comment
-                  await github.rest.pulls.createReviewComment({
-                    ...context.repo,
-                    pull_number: context.issue.number,
-                    commit_id: latestCommitSha,
-                    path: comment.path,
-                    line: comment.line,
-                    body: '✅ Issue resolved based on implemented changes.',
-                    in_reply_to: comment.id
-                  });
+                  // Mark the comment as resolved by adding a checkmark
+                  core.info(`Resolved comment in ${comment.path} at line ${comment.line}`);
                 }
               } catch (error) {
                 console.error(`Error processing comment: ${error}`);
               }
             }
 
-            // Check for remaining critical issues
+            // Check remaining critical issues (only count unresolved ones)
             const criticalIssues = comments.filter(comment => 
+              !comment.body.includes('✅') && // Not marked as resolved
               comment.body.includes('🚨 CRITICAL') && 
-              !comment.body.includes('✅')
+              !comments.some(reply => // No resolution reply
+                reply.in_reply_to === comment.id && 
+                (reply.body.includes('✅') || /resolved|fixed|completed|done/i.test(reply.body))
+              )
             );
 
             if (criticalIssues.length > 0) {
