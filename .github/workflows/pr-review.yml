@@ -50,7 +50,7 @@ jobs:
               pull_number: context.issue.number,
             });
 
-            // Create a Set of existing comments to prevent duplicates
+            // Create a Set of existing comments
             const existingComments = new Set(
               comments.map(comment => `${comment.path}:${comment.line}:${comment.body}`)
             );
@@ -61,27 +61,8 @@ jobs:
               pull_number: context.issue.number,
             });
 
-            // Create a map of file contents
-            const fileContents = new Map();
-            for (const file of files) {
-              try {
-                if (file.status === 'removed') {
-                  fileContents.set(file.filename, { status: 'removed' });
-                  continue;
-                }
-
-                const content = fs.readFileSync(file.filename, 'utf8');
-                fileContents.set(file.filename, {
-                  content,
-                  lines: content.split('\n'),
-                  status: file.status,
-                  patch: file.patch
-                });
-              } catch (error) {
-                console.error(`Error reading file ${file.filename}:`, error);
-                fileContents.set(file.filename, { status: 'removed' });
-              }
-            }
+            // Create a map to track template strings usage
+            const templateStringsMap = new Map();
 
             async function createComment(file, line, priority, category, message) {
               const priorityEmoji = {
@@ -102,6 +83,48 @@ jobs:
                   body: commentBody,
                   line: line
                 });
+              }
+            }
+
+            async function checkTemplateStrings(file, content, lines) {
+              // Extract all ngIf and ngSwitch string conditions
+              const ngDirectiveRegex = /\[(ngIf|ngSwitch)\]=\"['"]([^'"]+)['"]\"/g;
+              let match;
+              const stringUsages = new Map();
+
+              while ((match = ngDirectiveRegex.exec(content)) !== null) {
+                const [, directive, value] = match;
+                if (!stringUsages.has(value)) {
+                  stringUsages.set(value, { count: 0, lines: [] });
+                }
+                const usage = stringUsages.get(value);
+                usage.count++;
+                usage.lines.push(lines.findIndex(line => line.includes(match[0])) + 1);
+              }
+
+              // Check for repeated strings that should be enums
+              for (const [value, usage] of stringUsages) {
+                if (usage.count >= 2) {
+                  const enumName = value.split('-')
+                    .map(word => word.charAt(0).toUpperCase() + word.slice(1))
+                    .join('');
+
+                  const message = `String literal '${value}' is used ${usage.count} times. Consider creating an enum:\n\n` +
+                    `\`\`\`typescript\n` +
+                    `export enum ${enumName}Type {\n` +
+                    `  ${value.toUpperCase().replace(/-/g, '_')} = '${value}',\n` +
+                    `  // Add other values here\n` +
+                    `}\n\n` +
+                    `// In your component:\n` +
+                    `${enumName}Type = ${enumName}Type; // Add this to make enum available in template\n` +
+                    `\`\`\`\n\n` +
+                    `Then use it in your template:\n` +
+                    `\`[ngIf]="someValue === ${enumName}Type.${value.toUpperCase().replace(/-/g, '_')}"\``;
+
+                  await createComment(file, usage.lines[0], 'recommended', 'Template Type Safety',
+                    message
+                  );
+                }
               }
             }
 
@@ -150,9 +173,37 @@ jobs:
                   'Remove console.log statement from production code.'
                 );
               }
+
+              // Check for empty methods
+              const methodRegex = /(\w+\s*\([^)]*\)\s*{[^}]*})/g;
+              const methods = content.match(methodRegex) || [];
+              
+              for (const method of methods) {
+                const methodName = method.match(/(\w+)\s*\(/)[1];
+                const methodContent = method.match(/{([^}]*)}/)[1].trim();
+                
+                // Skip constructor if it's meant to be empty
+                if (methodName === 'constructor' && methodContent === '') {
+                  continue;
+                }
+                
+                // Check if method is empty or only has comments
+                const isEmptyMethod = !methodContent || methodContent.split('\n')
+                  .every(line => line.trim() === '' || line.trim().startsWith('//'));
+                
+                if (isEmptyMethod) {
+                  const lineNum = lines.findIndex(line => line.includes(methodName)) + 1;
+                  await createComment(file, lineNum, 'recommended', 'Code Cleanliness',
+                    `Remove empty method '${methodName}' if it's not being used. If it's meant to be implemented later, add a TODO comment explaining the intended functionality.`
+                  );
+                }
+              }
             }
 
             async function checkHtmlFile(file, content, lines) {
+              // Check template strings for potential enum usage
+              await checkTemplateStrings(file, content, lines);
+
               // Check performance issues in templates
               const ngForLines = lines
                 .map((line, index) => ({ line, index: index + 1 }))
@@ -202,7 +253,7 @@ jobs:
                 );
               }
 
-              // Check for magic numbers in styles
+              // Check for magic numbers
               const magicNumberLines = lines
                 .map((line, index) => ({ line, index: index + 1 }))
                 .filter(({ line }) => {
@@ -223,19 +274,27 @@ jobs:
 
             // Process files
             for (const file of files) {
-              const fileInfo = fileContents.get(file.filename);
-              if (file.status !== 'removed' && fileInfo?.content) {
+              try {
+                if (file.status === 'removed') continue;
+                
+                const content = await fs.readFileSync(file.filename, 'utf8');
+                const lines = content.split('\n');
                 const extension = file.filename.split('.').pop().toLowerCase();
-                const checksMap = {
-                  ts: checkTypeScriptFile,
-                  html: checkHtmlFile,
-                  scss: checkStyleFile,
-                  css: checkStyleFile
-                };
 
-                if (checksMap[extension]) {
-                  await checksMap[extension](file, fileInfo.content, fileInfo.lines);
+                switch (extension) {
+                  case 'ts':
+                    await checkTypeScriptFile(file, content, lines);
+                    break;
+                  case 'html':
+                    await checkHtmlFile(file, content, lines);
+                    break;
+                  case 'scss':
+                  case 'css':
+                    await checkStyleFile(file, content, lines);
+                    break;
                 }
+              } catch (error) {
+                console.error(`Error processing file ${file.filename}:`, error);
               }
             }
 
@@ -259,7 +318,7 @@ jobs:
               pull_number: context.issue.number,
             });
 
-            // Get the changed files
+            // Get changed files
             const { data: files } = await github.rest.pulls.listFiles({
               ...context.repo,
               pull_number: context.issue.number,
@@ -287,31 +346,40 @@ jobs:
               }
             }
 
-            async function resolveComment(comment, reason) {
-              try {
+            async function verifyFix(comment) {
+              const file = comment.path;
+              const fileInfo = fileContents.get(file);
+              
+              // Handle removed files
+              if (!fileInfo || fileInfo.status === 'removed') {
                 await github.rest.pulls.createReviewComment({
                   ...context.repo,
                   pull_number: context.issue.number,
                   commit_id: headSha,
                   path: comment.path,
-                  body: `✅ ${reason}`,
-                  in_reply_to: comment.id,
-                  line: comment.line
+                  line: comment.line,
+                  body: '✅ Issue resolved - File has been removed.',
+                  in_reply_to: comment.id
                 });
-                console.log(`Resolved comment in ${comment.path} at line ${comment.line}: ${reason}`);
-              } catch (error) {
-                console.error('Error resolving comment:', error);
+                return true;
               }
-            }
 
-            // Process each comment
-            for (const comment of comments) {
-              // Skip already resolved comments
-              if (comment.body.includes('✅')) continue;
+              // Handle removed or changed lines
+              if (comment.line > fileInfo.lines.length || 
+                  (fileInfo.status === 'modified' && !fileInfo.lines[comment.line - 1]?.includes(comment.original_line))) {
+                await github.rest.pulls.createReviewComment({
+                  ...context.repo,
+                  pull_number: context.issue.number,
+                  commit_id: headSha,
+                  path: comment.path,
+                  line: comment.line,
+                  body: '✅ Issue resolved - Code has been modified or removed.',
+                  in_reply_to: comment.id
+                });
+                return true;
+              }
 
-              const fileInfo = fileContents.get(comment.path);
-
-              // Case 1: Check if the comment is already resolved via UI
+              // Handle manual resolutions
               const conversationResolved = comments.some(reply => 
                 (reply.in_reply_to === comment.id || reply.id === comment.id) && 
                 (
@@ -321,60 +389,101 @@ jobs:
                   reply.state === 'resolved'
                 )
               );
-
+              
               if (conversationResolved) {
-                await resolveComment(comment, 'Issue resolved - Conversation marked as resolved');
+                await github.rest.pulls.createReviewComment({
+                  ...context.repo,
+                  pull_number: context.issue.number,
+                  commit_id: headSha,
+                  path: comment.path,
+                  line: comment.line,
+                  body: '✅ Issue resolved - Manually marked as resolved.',
+                  in_reply_to: comment.id
+                });
+                return true;
+              }
+
+              // Verification rules for specific issues
+              const rules = {
+                'Memory Leak Risk': () => {
+                  return fileInfo.content.includes('takeUntil') || 
+                         fileInfo.content.includes('| async') || 
+                         fileInfo.content.includes('unsubscribe()');
+                },
+                'Security Risk': () => {
+                  const line = fileInfo.lines[comment.line - 1] || '';
+                  return !line.includes('innerHTML') && 
+                         !line.includes('bypassSecurityTrust');
+                },
+                'Accessibility': () => {
+                  const line = fileInfo.lines[comment.line - 1] || '';
+                  if (line.includes('<img')) {
+                    return line.includes('alt=');
+                  }
+                  if (line.includes('<button')) {
+                    return line.includes('aria-label') || 
+                           !line.trim().endsWith('></button>');
+                  }
+                  if (line.includes('<input')) {
+                    return line.includes('aria-label') || 
+                           line.includes('id=');
+                  }
+                  return false;
+                },
+                'Performance': () => {
+                  if (comment.body.toLowerCase().includes('ngfor')) {
+                    const line = fileInfo.lines[comment.line - 1] || '';
+                    return line.includes('trackBy');
+                  }
+                  return false;
+                },
+                'Template Type Safety': () => {
+                  const line = fileInfo.lines[comment.line - 1] || '';
+                  // Check if string literals have been replaced with enum
+                  return !line.includes("'") && !line.includes('"') && 
+                         line.includes('Type.') && line.includes('enum');
+                }
+              };
+
+              // Check if any rule matches and is satisfied
+              const category = Object.keys(rules).find(key => 
+                comment.body.includes(key)
+              );
+              
+              if (category && rules[category]()) {
+                await github.rest.pulls.createReviewComment({
+                  ...context.repo,
+                  pull_number: context.issue.number,
+                  commit_id: headSha,
+                  path: comment.path,
+                  line: comment.line,
+                  body: `✅ Issue resolved - ${category} has been fixed.`,
+                  in_reply_to: comment.id
+                });
+                return true;
+              }
+
+              return false;
+            }
+
+            // Track resolved comments
+            const resolvedCommentIds = new Set();
+
+            // Process each comment
+            for (const comment of comments) {
+              // Skip already resolved comments
+              if (comment.body.includes('✅')) {
+                resolvedCommentIds.add(comment.id);
                 continue;
               }
-
-              // Case 2: File has been removed
-              if (!fileInfo || fileInfo.status === 'removed') {
-                await resolveComment(comment, 'Issue resolved - File has been removed');
-                continue;
-              }
-
-              // Case 3: Line has been changed or removed
-              if (comment.line > fileInfo.lines.length || 
-                  (fileInfo.status === 'modified' && !fileInfo.lines[comment.line - 1]?.includes(comment.original_line))) {
-                await resolveComment(comment, 'Issue resolved - Code has been modified or removed');
-                continue;
-              }
-
-              // Case 4: Check issue-specific resolutions
-              const commentBody = comment.body.toLowerCase();
-              const line = fileInfo.lines[comment.line - 1] || '';
-
-              // Memory leak fixes
-              if (commentBody.includes('memory leak')) {
-                if (fileInfo.content.includes('takeUntil') || 
-                    fileInfo.content.includes('| async') || 
-                    fileInfo.content.includes('unsubscribe()')) {
-                  await resolveComment(comment, 'Issue resolved - Memory leak fixed');
-                  continue;
+              
+              try {
+                const isFixed = await verifyFix(comment, resolvedCommentIds);
+                if (isFixed) {
+                  core.info(`Resolved comment in ${comment.path} at line ${comment.line}`);
                 }
-              }
-              // Security fixes
-              else if (commentBody.includes('security risk')) {
-                if (!line.includes('innerHTML') && !line.includes('bypassSecurityTrust')) {
-                  await resolveComment(comment, 'Issue resolved - Security issue fixed');
-                  continue;
-                }
-              }
-              // Accessibility fixes
-              else if (commentBody.includes('accessibility')) {
-                if ((line.includes('<img') && line.includes('alt=')) ||
-                    (line.includes('<button') && (line.includes('aria-label') || !line.trim().endsWith('></button>'))) ||
-                    (line.includes('<input') && (line.includes('aria-label') || line.includes('id=')))) {
-                  await resolveComment(comment, 'Issue resolved - Accessibility issue fixed');
-                  continue;
-                }
-              }
-              // Performance fixes
-              else if (commentBody.includes('performance') && commentBody.includes('ngfor')) {
-                if (line.includes('trackBy')) {
-                  await resolveComment(comment, 'Issue resolved - Performance issue fixed');
-                  continue;
-                }
+              } catch (error) {
+                console.error('Error processing comment:', error);
               }
             }
 
@@ -397,4 +506,5 @@ jobs:
             );
 
             if (criticalIssues.length > 0) {
-              core.setFailed(`${criticalIssues.length} critical issues
+              core.setFailed(`${criticalIssues.length} critical issues must be resolved before merging.`);
+            }
