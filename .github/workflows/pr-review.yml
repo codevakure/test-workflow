@@ -413,19 +413,28 @@ jobs:
               const conversationResolved = comments.some(reply => 
                 reply.in_reply_to === comment.id && 
                 (
-                  /resolved|fixed|completed|done/i.test(reply.body) ||
+                  /resolved|fixed|completed|done|Issue resolved/i.test(reply.body) ||
                   reply.body.includes('✅') ||
-                  (reply.state && reply.state === 'resolved')
+                  (reply.state && reply.state === 'resolved') ||
+                  reply.body.includes('has been fixed')
                 )
               );
 
-              if (conversationResolved) {
-                await github.rest.pulls.deleteReviewComment({
-                  ...context.repo,
-                  comment_id: comment.id
-                });
-                core.info(`Deleted manually resolved bot comment: ${file}:${comment.line}`);
-                return true;
+              // Also check if the file is marked as outdated
+              const isOutdated = comment.position === null || fileInfo?.status === 'removed';
+
+              if (conversationResolved || isOutdated) {
+                try {
+                  await github.rest.pulls.deleteReviewComment({
+                    ...context.repo,
+                    comment_id: comment.id
+                  });
+                  core.info(`Deleted ${isOutdated ? 'outdated' : 'resolved'} bot comment: ${file}:${comment.line}`);
+                  return true;
+                } catch (error) {
+                  core.warning(`Failed to delete comment ${comment.id}: ${error.message}`);
+                  return false;
+                }
               }
 
               // Only process github-actions[bot] comments for validation rules
