@@ -43,15 +43,7 @@ jobs:
               pull_number: context.issue.number,
             });
             const latestCommitSha = pr.head.sha;
-            console.log('PR SHA:', latestCommitSha);
-
-            // Get changed files
-            const { data: files } = await github.rest.pulls.listFiles({
-              ...context.repo,
-              pull_number: context.issue.number,
-            });
-            console.log('Number of files:', files.length);
-
+            
             // Get all review comments
             const { data: comments } = await github.rest.pulls.listReviewComments({
               ...context.repo,
@@ -62,6 +54,12 @@ jobs:
             const existingComments = new Set(
               comments.map(comment => `${comment.path}:${comment.line}:${comment.body}`)
             );
+
+            // Get changed files
+            const { data: files } = await github.rest.pulls.listFiles({
+              ...context.repo,
+              pull_number: context.issue.number,
+            });
 
             async function createComment(file, line, priority, category, message) {
               const priorityEmoji = {
@@ -74,99 +72,116 @@ jobs:
               const commentKey = `${file.filename}:${line}:${commentBody}`;
               
               if (!existingComments.has(commentKey)) {
-                try {
-                  await github.rest.pulls.createReviewComment({
-                    ...context.repo,
-                    pull_number: context.issue.number,
-                    commit_id: latestCommitSha,
-                    path: file.filename,
-                    body: commentBody,
-                    line: line,
-                    side: 'RIGHT'
-                  });
-                  console.log('Created comment for', file.filename, 'at line', line);
-                } catch (error) {
-                  console.error('Failed to create comment:', error);
-                }
+                await github.rest.pulls.createReviewComment({
+                  ...context.repo,
+                  pull_number: context.issue.number,
+                  commit_id: latestCommitSha,
+                  path: file.filename,
+                  body: commentBody,
+                  line: line
+                });
               }
             }
 
+            async function checkHtmlFile(file, content, lines) {
+              // Check for string literals in directives
+              const stringLiteralsMap = new Map();
+
+              // Collect string literals used in directives
+              lines.forEach((line, index) => {
+                // Skip comments
+                if (line.trim().startsWith('<!--')) return;
+
+                // Check only for conditional directives
+                const isDirectiveLine = 
+                  line.includes('*ngIf') || 
+                  line.includes('*ngFor') || 
+                  line.includes('[ngSwitch]') || 
+                  line.includes('*ngSwitchCase');
+
+                if (isDirectiveLine) {
+                  const stringMatches = line.match(/['"`]([^'"`]+)['"`]/g);
+                  if (stringMatches) {
+                    stringMatches.forEach(match => {
+                      const value = match.replace(/['"`]/g, '');
+                      // Ignore if value is not a string literal
+                      if (value && !value.includes('{{') && !value.includes('${')) {
+                        if (!stringLiteralsMap.has(value)) {
+                          stringLiteralsMap.set(value, []);
+                        }
+                        stringLiteralsMap.get(value).push(index + 1);
+                      }
+                    });
+                  }
+                }
+              });
+
+              // Check for repeated string literals
+              for (const [literal, lineNumbers] of stringLiteralsMap.entries()) {
+                if (lineNumbers.length >= 2) {
+                  const enumName = literal.includes('-') ? 
+                    literal.split('-')[0].toUpperCase() : 
+                    literal.toUpperCase();
+
+                  await createComment(
+                    file,
+                    lineNumbers[0],
+                    'recommended',
+                    'String Literal Optimization',
+                    `String literal '${literal}' is used ${lineNumbers.length} times in Angular directives.\n\n` +
+                    `To improve type safety and maintainability, create an enum:\n\n` +
+                    `\`\`\`typescript\nenum ${enumName}Status {\n` +
+                    `  ${literal.toUpperCase().replace(/-/g, '_')} = '${literal}',\n` +
+                    `  // Add other related status values here\n` +
+                    `}\n\`\`\`\n\n` +
+                    `Then update the template to use:\n` +
+                    `\`\`\`html\n*ngIf="variable === ${enumName}Status.${literal.toUpperCase().replace(/-/g, '_')}"\n\`\`\`\n\n` +
+                    `Found on lines: ${lineNumbers.join(', ')}`
+                  );
+                }
+              }
+
+              // Your existing HTML checks continue here...
+              // Check performance issues in templates
+              const ngForLines = lines
+                .map((line, index) => ({ line, index: index + 1 }))
+                .filter(({ line }) => {
+                  const hasNgFor = line.includes('*ngFor');
+                  const hasTrackBy = line.includes('trackBy');
+                  const hasComplexBinding = (line.match(/{{.*}}/g) || []).length > 1;
+                  return hasNgFor && !hasTrackBy && hasComplexBinding;
+                });
+
+              for (const { index } of ngForLines) {
+                await createComment(file, index, 'recommended', 'Performance',
+                  'Add trackBy function to improve rendering performance with complex *ngFor.'
+                );
+              }
+
+              // Continue with rest of your existing HTML checks...
+            }
+
+            // Process files
             for (const file of files) {
               try {
                 if (file.status === 'removed') continue;
-
-                // Check if file is HTML and has changes
-                if (!file.filename.endsWith('.html') || !file.patch) {
-                  continue;
-                }
-
-                console.log('Processing file:', file.filename);
                 
-                // Use the patch from the PR instead of reading the file
-                const lines = file.patch.split('\n')
-                  .filter(line => line.startsWith('+'))
-                  .map(line => line.substring(1));
-                
-                console.log('Processing lines:', lines.length);
+                const content = await fs.promises.readFile(file.filename, 'utf8');
+                const lines = content.split('\n');
+                const extension = file.filename.split('.').pop().toLowerCase();
 
-                const stringLiteralsMap = new Map();
-
-                lines.forEach((line, index) => {
-                  if (line.includes('*ngIf')) {
-                    console.log('Found ngIf line:', line);
-                    // Match string literals in ngIf directives
-                    const matches = line.match(/[=!]=?\s*['"]([^'"]+)['"]/g);
-                    if (matches) {
-                      matches.forEach(match => {
-                        const literalMatch = match.match(/['"]([^'"]+)['"]/);
-                        if (literalMatch) {
-                          const value = literalMatch[1];
-                          if (!stringLiteralsMap.has(value)) {
-                            stringLiteralsMap.set(value, []);
-                          }
-                          // Use the actual line number from the PR diff
-                          const lineNumber = file.patch.split('\n')
-                            .findIndex(l => l.includes(line)) + 1;
-                          stringLiteralsMap.get(value).push(lineNumber);
-                          console.log('Found literal:', value, 'at line:', lineNumber);
-                        }
-                      });
-                    }
-                  }
-                });
-
-                console.log('String literals found:', Array.from(stringLiteralsMap.entries()));
-
-                for (const [literal, lineNumbers] of stringLiteralsMap.entries()) {
-                  if (lineNumbers.length >= 2) {
-                    console.log('Found repeated literal:', literal, 'at lines:', lineNumbers);
-                    const enumName = literal.includes('-') ? 
-                      literal.split('-')[0].toUpperCase() : 
-                      literal.toUpperCase();
-
-                    await createComment(
-                      file,
-                      lineNumbers[0],
-                      'recommended',
-                      'String Literal Optimization',
-                      `String literal '${literal}' is used ${lineNumbers.length} times in Angular directives.\n\n` +
-                      `To improve type safety and maintainability, create an enum:\n\n` +
-                      `\`\`\`typescript\nenum ${enumName}Status {\n` +
-                      `  ${literal.toUpperCase().replace(/-/g, '_')} = '${literal}',\n` +
-                      `  // Add other related status values here\n` +
-                      `}\n\`\`\`\n\n` +
-                      `Then update the template to use:\n` +
-                      `\`\`\`html\n*ngIf="variable === ${enumName}Status.${literal.toUpperCase().replace(/-/g, '_')}"\n\`\`\`\n\n` +
-                      `Found on lines: ${lineNumbers.join(', ')}`
-                    );
-                  }
+                switch (extension) {
+                  case 'html':
+                    await checkHtmlFile(file, content, lines);
+                    break;
+                  // Other file type checks...
                 }
-
               } catch (error) {
                 console.error(`Error processing file ${file.filename}:`, error);
               }
             }
             
+               
       - name: Verify Changes and Auto-resolve Comments
         if: github.event.action == 'synchronize' || github.event.action == 'opened'
         uses: actions/github-script@v7
