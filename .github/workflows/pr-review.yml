@@ -42,16 +42,36 @@ jobs:
                 recommended: '💡 RECOMMENDED: ',
                 optional: '💭 OPTIONAL: '
               };
-              
-              await github.rest.pulls.createReviewComment({
+
+              // Get the latest commit SHA from the pull request
+              const { data: pullRequest } = await github.rest.pulls.get({
                 owner: context.repo.owner,
                 repo: context.repo.repo,
-                pull_number: context.payload.pull_request.number,
-                commit_id: file.sha,
-                path: file.filename,
-                body: `${priorityEmoji[priority]}**${category}**\n\n${message}`,
-                line: line
+                pull_number: context.payload.pull_request.number
               });
+              
+              const latestCommitSha = pullRequest.head.sha;
+              
+              try {
+                await github.rest.pulls.createReviewComment({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  pull_number: context.payload.pull_request.number,
+                  commit_id: latestCommitSha,
+                  path: file.filename,
+                  body: `${priorityEmoji[priority]}**${category}**\n\n${message}`,
+                  line: line
+                });
+              } catch (error) {
+                console.error(`Failed to create review comment: ${error.message}`);
+                // If we can't create a review comment, try to create a regular issue comment
+                await github.rest.issues.createComment({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: context.payload.pull_request.number,
+                  body: `In file \`${file.filename}\` line ${line}:\n\n${priorityEmoji[priority]}**${category}**\n\n${message}`
+                });
+              }
             }
 
             async function checkFileContent(github, context, file, content, lines, fileExt) {
