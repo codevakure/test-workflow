@@ -487,16 +487,38 @@ jobs:
               // Skip if not a critical issue
               if (!comment.body.includes('🚨 CRITICAL')) return false;
 
-              // Skip if resolved
-              const hasResolution = updatedComments.some(reply => 
-                reply.in_reply_to === comment.id && 
-                (reply.body.includes('✅') || 
-                 /resolved|fixed|completed|done/i.test(reply.body))
-              );
+              // Check for various forms of resolution:
+              // 1. Automated resolution (✅)
+              // 2. Manual resolution keywords in replies
+              // 3. Manual resolution keywords in original comment thread
+              const isResolved = updatedComments.some(reply => {
+                // Check if this is a reply to our comment
+                const isReplyToComment = reply.in_reply_to === comment.id;
+                
+                if (!isReplyToComment) return false;
 
-              return !hasResolution;
+                // Check for various resolution indicators
+                const hasCheckmark = reply.body.includes('✅');
+                const hasResolutionKeyword = /resolved|fixed|completed|done/i.test(reply.body);
+                const isMarkedResolved = reply.body.toLowerCase().includes('marked as resolved');
+                const hasApprovalEmoji = /👍|✅|☑️|✔️/.test(reply.body);
+                
+                return hasCheckmark || hasResolutionKeyword || isMarkedResolved || hasApprovalEmoji;
+              });
+
+              // Also check if the original comment itself indicates resolution
+              const originalCommentResolved = /resolved|fixed|completed|done/i.test(comment.body) ||
+                                           comment.body.includes('marked as resolved');
+
+              return !isResolved && !originalCommentResolved;
             });
 
             if (remainingCriticalIssues.length > 0) {
+              core.info('Found unresolved critical issues:');
+              remainingCriticalIssues.forEach(issue => {
+                core.info(`- ${issue.path}:${issue.line} - ${issue.body.split('\n')[0]}`);
+              });
               core.setFailed(`${remainingCriticalIssues.length} critical issues must be resolved before merging.`);
+            } else {
+              core.info('All critical issues have been resolved.');
             }
