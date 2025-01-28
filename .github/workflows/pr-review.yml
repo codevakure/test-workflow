@@ -370,7 +370,6 @@ jobs:
               ...context.repo,
               pull_number: context.issue.number,
             });
-            const headSha = pr.head.sha;
 
             // Get all review comments
             const { data: comments } = await github.rest.pulls.listReviewComments({
@@ -427,25 +426,6 @@ jobs:
                 });
                 core.info(`Deleted manually resolved bot comment: ${file}:${comment.line}`);
                 return true;
-              }
-
-              // Check for "Resolve conversation" button clicked
-              const parentReview = comment.pull_request_review_id;
-              if (parentReview) {
-                const { data: review } = await github.rest.pulls.getReview({
-                  ...context.repo,
-                  pull_number: context.issue.number,
-                  review_id: parentReview
-                });
-                
-                if (review.state === 'DISMISSED') {
-                  await github.rest.pulls.deleteReviewComment({
-                    ...context.repo,
-                    comment_id: comment.id
-                  });
-                  core.info(`Deleted resolved review comment: ${file}:${comment.line}`);
-                  return true;
-                }
               }
 
               // Only process github-actions[bot] comments for validation rules
@@ -507,66 +487,27 @@ jobs:
               return false;
             }
 
-            // Clean up outdated comments
+            // Process and clean up comments
             const commentsByLocation = new Map();
+
+            // Group comments by location
             for (const comment of comments) {
-              // Only process github-actions[bot] comments
               if (comment.user.login !== 'github-actions[bot]') continue;
-
-              let key = `${comment.path}:${comment.line}`;
-              if (!commentsByLocation.has(key)) {
-                commentsByLocation.set(key, []);
-              }
-              commentsByLocation.get(key).push(comment);
-            }
-            
-            // Find and delete outdated comments
-            for (const [location, locationComments] of commentsByLocation) {
-              if (locationComments.length > 1) {
-                // Sort by creation time, newest first
-                locationComments.sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
-                
-                // Delete all but the newest bot comment
-                for (let i = 1; i < locationComments.length; i++) {
-                  try {
-                    await github.rest.pulls.deleteReviewComment({
-                      ...context.repo,
-                      comment_id: locationComments[i].id
-                    });
-                    core.info(`Deleted duplicate bot comment: ${locationComments[i].id}`);
-                  } catch (error) {
-                    core.warning(`Failed to delete comment ${locationComments[i].id}: ${error.message}`);
-                  }
-                }
-              }
-            }
-
-            // Process remaining comments
-            for (const comment of comments) {
-              try {
-                // Only process github-actions[bot] comments
-                if (comment.user.login === 'github-actions[bot]') {
-                  await verifyFix(comment);
-                }
-              } catch (error) {
-                console.error('Error processing comment:', error);
-              }
-            }
-
-            // Clean up outdated comments
-            const commentsByLocation = new Map();
-            for (const comment of comments) {
+              
               const key = `${comment.path}:${comment.line}`;
               if (!commentsByLocation.has(key)) {
                 commentsByLocation.set(key, []);
               }
               commentsByLocation.get(key).push(comment);
             }
-            
-            // Find and delete outdated comments
+
+            // Clean up duplicate comments and verify fixes
             for (const [location, locationComments] of commentsByLocation) {
               if (locationComments.length > 1) {
+                // Sort by creation time, newest first
                 locationComments.sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+                
+                // Keep the newest comment and delete others
                 for (let i = 1; i < locationComments.length; i++) {
                   try {
                     await github.rest.pulls.deleteReviewComment({
@@ -579,15 +520,9 @@ jobs:
                   }
                 }
               }
-            }
 
-            // Process remaining comments
-            for (const comment of comments) {
-              try {
-                await verifyFix(comment);
-              } catch (error) {
-                console.error('Error processing comment:', error);
-              }
+              // Verify fix for the remaining (newest) comment
+              await verifyFix(locationComments[0]);
             }
 
             // Check remaining critical issues
