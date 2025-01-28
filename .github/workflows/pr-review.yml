@@ -359,29 +359,37 @@ jobs:
             }
 
       - name: Verify Changes and Auto-resolve Comments
-        if: github.event.action == 'synchronize'
+        if: github.event.action == 'synchronize' || github.event.action == 'opened'
         uses: actions/github-script@v7
         with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
             const fs = require('fs');
 
-            // Get PR information
-            const { data: pr } = await github.rest.pulls.get({
-              ...context.repo,
-              pull_number: context.issue.number,
-            });
+            try {
+              // Get PR information
+              const { data: pr } = await github.rest.pulls.get({
+                ...context.repo,
+                pull_number: context.issue.number,
+              });
 
-            // Get all review comments
-            const { data: comments } = await github.rest.pulls.listReviewComments({
-              ...context.repo,
-              pull_number: context.issue.number,
-            });
+              // Get all review comments
+              const { data: comments } = await github.rest.pulls.listReviewComments({
+                ...context.repo,
+                pull_number: context.issue.number,
+              });
 
-            // Get changed files
-            const { data: files } = await github.rest.pulls.listFiles({
-              ...context.repo,
-              pull_number: context.issue.number,
-            });
+              // Get review threads
+              const { data: reviewThreads } = await github.rest.pulls.listReviewThreads({
+                ...context.repo,
+                pull_number: context.issue.number,
+              });
+
+              // Get changed files
+              const { data: files } = await github.rest.pulls.listFiles({
+                ...context.repo,
+                pull_number: context.issue.number,
+              });
 
             // Create a map of file contents
             const fileContents = new Map();
@@ -496,91 +504,79 @@ jobs:
               return false;
             }
 
-            // Process and clean up comments
-            const commentsByLocation = new Map();
-
-            // Group comments by location
-            for (const comment of comments) {
-              if (comment.user.login !== 'github-actions[bot]') continue;
-              
-              const key = `${comment.path}:${comment.line}`;
-              if (!commentsByLocation.has(key)) {
-                commentsByLocation.set(key, []);
-              }
-              commentsByLocation.get(key).push(comment);
-            }
-
-            // Clean up duplicate comments and verify fixes
-            for (const [location, locationComments] of commentsByLocation) {
-              if (locationComments.length > 1) {
-                // Sort by creation time, newest first
-                locationComments.sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
-                
-                // Keep the newest comment and delete others
-                for (let i = 1; i < locationComments.length; i++) {
-                  try {
-                    await github.rest.pulls.deleteReviewComment({
-                      ...context.repo,
-                      comment_id: locationComments[i].id
-                    });
-                    core.info(`Deleted duplicate comment: ${locationComments[i].id}`);
-                  } catch (error) {
-                    core.warning(`Failed to delete comment ${locationComments[i].id}: ${error.message}`);
-                  }
-                }
-              }
-
-              // Verify fix for the remaining (newest) comment
-              await verifyFix(locationComments[0]);
-            }
-
-            // Check remaining critical issues
-            const remainingComments = await github.rest.pulls.listReviewComments({
-              ...context.repo,
-              pull_number: context.issue.number,
-            });
-
-            // Get the review threads to check for resolved status
-            const { data: reviewThreads } = await github.rest.pulls.listReviewThreads({
-              ...context.repo,
-              pull_number: context.issue.number,
-            });
-
-            // Create a Set of resolved comment IDs from threads
+            // Create sets for tracking resolved and outdated comments
             const resolvedCommentIds = new Set();
+            const outdatedCommentIds = new Set();
+
+            // Track resolved comments from review threads
             reviewThreads.forEach(thread => {
               if (thread.resolved) {
-                thread.comments.forEach(comment => {
-                  resolvedCommentIds.add(comment.id);
+                thread.comments.forEach(comment => resolvedCommentIds.add(comment.id));
+              }
+            });
+
+            // Track outdated comments
+            comments.forEach(comment => {
+              if (comment.position === null) {
+                outdatedCommentIds.add(comment.id);
+              }
+            });
+
+            // Process all comments
+            for (const comment of comments) {
+              // Skip non-bot comments
+              if (comment.user.login !== 'github-actions[bot]') continue;
+
+              const isResolved = resolvedCommentIds.has(comment.id) ||
+                comments.some(reply => 
+                  reply.in_reply_to === comment.id && 
+                  (
+                    /resolved|fixed|completed|done|Issue resolved/i.test(reply.body) ||
+                    reply.body.includes('✅') ||
+                    reply.body.includes('has been fixed')
+                  )
+                );
+
+              const isOutdated = outdatedCommentIds.has(comment.id);
+
+              if (isResolved || isOutdated) {
+                try {
+                  await github.rest.pulls.deleteReviewComment({
+                    ...context.repo,
+                    comment_id: comment.id
+                  });
+                  core.info(`Deleted ${isOutdated ? 'outdated' : 'resolved'} comment: ${comment.path}:${comment.line}`);
+                } catch (error) {
+                  core.warning(`Failed to delete comment ${comment.id}: ${error.message}`);
+                }
+              }
+            }
+
+            // Get final remaining comments after cleanup
+            const { data: finalComments } = await github.rest.pulls.listReviewComments({
+              ...context.repo,
+              pull_number: context.issue.number,
+            });
+
+            // Filter for remaining critical issues
+            const criticalIssues = finalComments.filter(comment => 
+              comment.user.login === 'github-actions[bot]' &&
+              comment.body.includes('🚨 CRITICAL') &&
+              !resolvedCommentIds.has(comment.id) &&
+              !outdatedCommentIds.has(comment.id)
+            );
+
+              // Log remaining issues
+              if (criticalIssues.length > 0) {
+                core.info('Found remaining critical issues:');
+                criticalIssues.forEach(issue => {
+                  core.info(`- ${issue.path}:${issue.line} - ${issue.body.split('\n')[0]}`);
                 });
+                core.setFailed(`${criticalIssues.length} critical issues must be resolved before merging.`);
+              } else {
+                core.info('All critical issues have been resolved.');
               }
-            });
-
-            const criticalIssues = remainingComments.data.filter(comment => {
-              // Skip if the comment is in a resolved thread
-              if (resolvedCommentIds.has(comment.id)) {
-                return false;
-              }
-              
-              // Skip if there are resolution replies
-              const hasResolutionReply = remainingComments.data.some(reply => 
-                reply.in_reply_to === comment.id && 
-                (
-                  /resolved|fixed|completed|done|Issue resolved/i.test(reply.body) ||
-                  reply.body.includes('✅') ||
-                  reply.body.includes('has been fixed')
-                )
-              );
-
-              return !hasResolutionReply && comment.body.includes('🚨 CRITICAL');
-            });
-
-            if (criticalIssues.length > 0) {
-              core.info('Found remaining critical issues:');
-              criticalIssues.forEach(issue => {
-                core.info(`- ${issue.path}:${issue.line} - ${issue.body.split('\n')[0]}`);
-              });
-              core.setFailed(`${criticalIssues.length} critical issues must be resolved before merging.`);
-            } else {
-              core.info('All critical issues have been resolved.');
+            } catch (error) {
+              core.setFailed(`Error in verification step: ${error.message}`);
+              console.error('Full error:', error);
             }
