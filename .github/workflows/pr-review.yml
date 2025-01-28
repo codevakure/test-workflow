@@ -8,6 +8,7 @@ on:
       - '**.html'
       - '**.scss'
       - '**.css'
+      - '**.js'
 
 permissions:
   contents: read
@@ -145,6 +146,44 @@ jobs:
                 }
               }
 
+              // Ionic Responsive Design Checks
+              const ionResponsivePatterns = [
+                {
+                  pattern: /<ion-(col|grid)[^>]*size="(12|"|\s)*"[^>]*>/,
+                  exclude: /size-[s|m|l|x][mdlgx]=/,
+                  message: 'Consider adding responsive breakpoints (size-sm, size-md, size-lg, size-xl) for better layout adaptation across different screen sizes. Example:\n```html\n<ion-col size="12" size-sm="6" size-md="4" size-lg="3">\n```'
+                },
+                {
+                  pattern: /<ion-grid[^>]*>/,
+                  exclude: /fixed|no-padding/,
+                  message: 'Consider using `fixed` attribute for consistent container width or `no-padding` when nested grids are used. Example:\n```html\n<ion-grid fixed>\n```'
+                },
+                {
+                  pattern: /<ion-row[^>]*>/,
+                  exclude: /wrap|nowrap|reverse|align-items-|justify-content-/,
+                  message: 'Consider adding flex properties for better responsive behavior:\n```html\n<ion-row wrap align-items-center justify-content-between>\n```'
+                }
+              ];
+
+              for (const check of ionResponsivePatterns) {
+                const matches = lines
+                  .map((line, index) => ({ line, index: index + 1 }))
+                  .filter(({ line }) => 
+                    check.pattern.test(line) && 
+                    (!check.exclude || !check.exclude.test(line))
+                  );
+
+                for (const { index } of matches) {
+                  const issueKey = `${file.filename}:${index}:ionic-responsive`;
+                  if (!reportedIssues.has(issueKey)) {
+                    await createComment(file, index, 'recommended', 'Responsive Design',
+                      check.message
+                    );
+                    reportedIssues.add(issueKey);
+                  }
+                }
+              }
+
               // Accessibility checks with line tracking
               const accessibilityChecks = [
                 {
@@ -196,8 +235,12 @@ jobs:
               pull_number: context.issue.number,
             });
 
+            // Filter for specific file extensions
+            const allowedExtensions = ['ts', 'html', 'scss', 'css', 'js'];
+            
             for (const file of files) {
-              if (file.status !== 'removed') {  // Skip deleted files
+              const fileExt = file.filename.split('.').pop().toLowerCase();
+              if (file.status !== 'removed' && allowedExtensions.includes(fileExt)) {  // Skip deleted files and check extension
                 const content = fs.readFileSync(file.filename, 'utf8');
                 const lines = content.split('\n');
                 const fileExt = file.filename.split('.').pop();
