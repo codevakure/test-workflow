@@ -364,8 +364,6 @@ jobs:
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
-            const fs = require('fs');
-
             try {
               // Get PR information
               const { data: pr } = await github.rest.pulls.get({
@@ -379,8 +377,8 @@ jobs:
                 pull_number: context.issue.number,
               });
 
-              // Get review threads
-              const { data: reviewThreads } = await github.rest.pulls.listReviewThreads({
+              // Get all reviews to check for resolved conversations
+              const { data: reviews } = await github.rest.pulls.listReviews({
                 ...context.repo,
                 pull_number: context.issue.number,
               });
@@ -391,144 +389,19 @@ jobs:
                 pull_number: context.issue.number,
               });
 
-            // Create a map of file contents
-            const fileContents = new Map();
-            for (const file of files) {
-              try {
-                if (file.status === 'removed') {
-                  fileContents.set(file.filename, { status: 'removed' });
-                  continue;
+              // Create sets for tracking resolved and outdated comments
+              const resolvedCommentIds = new Set();
+              const outdatedCommentIds = new Set();
+
+              // Track resolved comments from reviews
+              comments.forEach(comment => {
+                // Check if comment is outdated
+                if (comment.position === null) {
+                  outdatedCommentIds.add(comment.id);
                 }
 
-                const content = fs.readFileSync(file.filename, 'utf8');
-                fileContents.set(file.filename, {
-                  content,
-                  lines: content.split('\n'),
-                  status: file.status,
-                  patch: file.patch
-                });
-              } catch (error) {
-                console.error(`Error reading file ${file.filename}:`, error);
-                fileContents.set(file.filename, { status: 'removed' });
-              }
-            }
-
-            async function verifyFix(comment) {
-              const file = comment.path;
-              const fileInfo = fileContents.get(file);
-              
-              // Check for manual resolution in any reply
-              const conversationResolved = comments.some(reply => 
-                reply.in_reply_to === comment.id && 
-                (
-                  /resolved|fixed|completed|done|Issue resolved/i.test(reply.body) ||
-                  reply.body.includes('✅') ||
-                  (reply.state && reply.state === 'resolved') ||
-                  reply.body.includes('has been fixed')
-                )
-              );
-
-              // Also check if the file is marked as outdated
-              const isOutdated = comment.position === null || fileInfo?.status === 'removed';
-
-              if (conversationResolved || isOutdated) {
-                try {
-                  await github.rest.pulls.deleteReviewComment({
-                    ...context.repo,
-                    comment_id: comment.id
-                  });
-                  core.info(`Deleted ${isOutdated ? 'outdated' : 'resolved'} bot comment: ${file}:${comment.line}`);
-                  return true;
-                } catch (error) {
-                  core.warning(`Failed to delete comment ${comment.id}: ${error.message}`);
-                  return false;
-                }
-              }
-
-              // Only process github-actions[bot] comments for validation rules
-              if (comment.user.login !== 'github-actions[bot]') return false;
-
-              // Verification rules for specific issues
-              const rules = {
-                'Memory Leak Risk': () => {
-                  const relevantContent = fileInfo.content;
-                  return (
-                    /\.pipe\s*\(\s*takeUntil\s*\(/.test(relevantContent) ||
-                    /\|\s*async/.test(relevantContent) ||
-                    /ngOnDestroy\s*\(\s*\)\s*{[^}]*this\.[^.]+\.unsubscribe\s*\(\s*\)/.test(relevantContent)
-                  );
-                },
-                'Security Risk': () => {
-                  const line = fileInfo.lines[comment.line - 1] || '';
-                  return !(/\binnerHTML\s*=/.test(line) || 
-                          /bypassSecurityTrust\w+\s*\(/.test(line));
-                },
-                'Accessibility': () => {
-                  const line = fileInfo.lines[comment.line - 1] || '';
-                  if (line.includes('<img')) {
-                    return line.includes('alt=');
-                  }
-                  if (line.includes('<button')) {
-                    return line.includes('aria-label') || 
-                           !line.trim().endsWith('></button>');
-                  }
-                  if (line.includes('<input')) {
-                    return line.includes('aria-label') || 
-                           line.includes('id=');
-                  }
-                  return false;
-                },
-                'Performance': () => {
-                  if (comment.body.toLowerCase().includes('ngfor')) {
-                    const line = fileInfo.lines[comment.line - 1] || '';
-                    return line.includes('trackBy');
-                  }
-                  return false;
-                }
-              };
-
-              // Check if any rule matches and is satisfied
-              const category = Object.keys(rules).find(key => 
-                comment.body.includes(key)
-              );
-              
-              if (category && rules[category]()) {
-                await github.rest.pulls.deleteReviewComment({
-                  ...context.repo,
-                  comment_id: comment.id
-                });
-                core.info(`Deleted resolved ${category} comment: ${file}:${comment.line}`);
-                return true;
-              }
-
-              return false;
-            }
-
-            // Create sets for tracking resolved and outdated comments
-            const resolvedCommentIds = new Set();
-            const outdatedCommentIds = new Set();
-
-            // Track resolved comments from review threads
-            reviewThreads.forEach(thread => {
-              if (thread.resolved) {
-                thread.comments.forEach(comment => resolvedCommentIds.add(comment.id));
-              }
-            });
-
-            // Track outdated comments
-            comments.forEach(comment => {
-              if (comment.position === null) {
-                outdatedCommentIds.add(comment.id);
-              }
-            });
-
-            // Process all comments
-            for (const comment of comments) {
-              // Skip non-bot comments
-              if (comment.user.login !== 'github-actions[bot]') continue;
-
-              const isResolved = resolvedCommentIds.has(comment.id) ||
-                comments.some(reply => 
+                // Check for resolution replies
+                const hasResolutionReply = comments.some(reply => 
                   reply.in_reply_to === comment.id && 
                   (
                     /resolved|fixed|completed|done|Issue resolved/i.test(reply.body) ||
@@ -537,34 +410,51 @@ jobs:
                   )
                 );
 
-              const isOutdated = outdatedCommentIds.has(comment.id);
+                if (hasResolutionReply) {
+                  resolvedCommentIds.add(comment.id);
+                }
 
-              if (isResolved || isOutdated) {
-                try {
-                  await github.rest.pulls.deleteReviewComment({
-                    ...context.repo,
-                    comment_id: comment.id
-                  });
-                  core.info(`Deleted ${isOutdated ? 'outdated' : 'resolved'} comment: ${comment.path}:${comment.line}`);
-                } catch (error) {
-                  core.warning(`Failed to delete comment ${comment.id}: ${error.message}`);
+                // Check if the comment's review was dismissed
+                const parentReview = reviews.find(review => review.id === comment.pull_request_review_id);
+                if (parentReview && parentReview.state === 'DISMISSED') {
+                  resolvedCommentIds.add(comment.id);
+                }
+              });
+
+              // Process all comments
+              for (const comment of comments) {
+                // Skip non-bot comments
+                if (comment.user.login !== 'github-actions[bot]') continue;
+
+                const isResolved = resolvedCommentIds.has(comment.id);
+                const isOutdated = outdatedCommentIds.has(comment.id);
+
+                if (isResolved || isOutdated) {
+                  try {
+                    await github.rest.pulls.deleteReviewComment({
+                      ...context.repo,
+                      comment_id: comment.id
+                    });
+                    core.info(`Deleted ${isOutdated ? 'outdated' : 'resolved'} comment: ${comment.path}:${comment.line}`);
+                  } catch (error) {
+                    core.warning(`Failed to delete comment ${comment.id}: ${error.message}`);
+                  }
                 }
               }
-            }
 
-            // Get final remaining comments after cleanup
-            const { data: finalComments } = await github.rest.pulls.listReviewComments({
-              ...context.repo,
-              pull_number: context.issue.number,
-            });
+              // Get final remaining comments after cleanup
+              const { data: finalComments } = await github.rest.pulls.listReviewComments({
+                ...context.repo,
+                pull_number: context.issue.number,
+              });
 
-            // Filter for remaining critical issues
-            const criticalIssues = finalComments.filter(comment => 
-              comment.user.login === 'github-actions[bot]' &&
-              comment.body.includes('🚨 CRITICAL') &&
-              !resolvedCommentIds.has(comment.id) &&
-              !outdatedCommentIds.has(comment.id)
-            );
+              // Filter for remaining critical issues
+              const criticalIssues = finalComments.filter(comment => 
+                comment.user.login === 'github-actions[bot]' &&
+                comment.body.includes('🚨 CRITICAL') &&
+                !resolvedCommentIds.has(comment.id) &&
+                !outdatedCommentIds.has(comment.id)
+              );
 
               // Log remaining issues
               if (criticalIssues.length > 0) {
