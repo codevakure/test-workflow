@@ -286,27 +286,20 @@ jobs:
 
             const CHECK_NAME = 'Ionic/Angular PR Review';
             
-            // Create or update check run with results
-            const checkTitle = criticalIssuesFound ? 
-              '🚨 Critical Issues Found' : 
-              '✅ No Critical Issues';
-
-            const checkSummary = criticalIssuesFound ?
-              'The following critical issues must be resolved before merging:\n\n' + 
-              criticalIssues.map(issue => `- ${issue}`).join('\n') :
-              'No critical issues found in the code review.';
-
-            // Create a single check run for the entire review process
-            await github.rest.checks.create({
+            // After all checks, update the check run
+            await github.rest.checks.update({
               owner: context.repo.owner,
               repo: context.repo.repo,
-              name: CHECK_NAME,
-              head_sha: context.payload.pull_request.head.sha,
+              check_run_id: check.data.id,
               status: 'completed',
               conclusion: criticalIssuesFound ? 'failure' : 'success',
+              completed_at: new Date().toISOString(),
               output: {
-                title: checkTitle,
-                summary: checkSummary
+                title: criticalIssuesFound ? '🚨 Critical Issues Found' : '✅ No Critical Issues',
+                summary: criticalIssuesFound ?
+                  'The following critical issues must be resolved before merging:\n\n' + 
+                  criticalIssues.map(issue => `- ${issue}`).join('\n') :
+                  'No critical issues found in the code review.'
               }
             });
 

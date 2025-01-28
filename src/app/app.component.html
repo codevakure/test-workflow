@@ -1,14 +1,134 @@
-<div #contentDiv></div>
+<!-- Missing ion-row parent -->
+<ion-col>
+  <p>This column has no row parent</p>
+</ion-col>
 
-<!-- Performance Issue: Missing trackBy -->
-<div *ngFor="let item of items">
-  {{ item }}
+<!-- Incorrect column sizing (total > 12) -->
+<ion-row>
+  <ion-col size="8">Column 1</ion-col>
+  <ion-col size="7">Column 2</ion-col>
+</ion-row>
+
+<!-- Missing responsive sizes -->
+<ion-row>
+  <ion-col size="12">
+    <h2>Full width on all screens</h2>
+  </ion-col>
+</ion-row>
+
+<!-- Nested columns without proper structure -->
+<ion-row>
+  <ion-col>
+    <ion-col>Nested column without row</ion-col>
+  </ion-col>
+</ion-row>
+
+<!-- Missing size attributes -->
+<ion-row>
+  <ion-col>
+    <div>Content</div>
+  </ion-col>
+  <ion-col>
+    <div>More content</div>
+  </ion-col>
+</ion-row>
+
+<!-- Mixing fixed and responsive columns incorrectly -->
+<ion-row>
+  <ion-col size="6">Half width</ion-col>
+  <ion-col size-md>Dynamic width</ion-col>
+  <ion-col size="4">Third width</ion-col>
+</ion-row>
+
+<!-- Incorrect offset usage -->
+<ion-row>
+  <ion-col offset="13" size="6">
+    Incorrect offset
+  </ion-col>
+</ion-row>
+
+<!-- Empty columns without content -->
+<ion-row>
+  <ion-col></ion-col>
+  <ion-col size="6">Content</ion-col>
+  <ion-col></ion-col>
+</ion-row>
+
+
+
+<!-- Missing aria-labels on interactive elements -->
+<button (click)="doSomething()">
+  <ion-icon name="trash"></ion-icon>
+</button>
+
+<input type="text" placeholder="Search...">
+
+<!-- Empty aria-labels -->
+<button aria-label="">
+  <ion-icon name="settings"></ion-icon>
+</button>
+
+<!-- Missing labels on form controls -->
+<ion-item>
+  <ion-input type="text"></ion-input>
+</ion-item>
+
+<ion-select>
+  <ion-select-option value="1">Option 1</ion-select-option>
+  <ion-select-option value="2">Option 2</ion-select-option>
+</ion-select>
+
+<!-- Images without alt text or aria-labels -->
+<img src="icon.png">
+<ion-img src="logo.png"></ion-img>
+
+<!-- Custom controls without proper ARIA roles and labels -->
+<div role="button" (click)="submit()">
+  Submit Form
 </div>
 
-<!-- Security Issue: Direct HTML binding -->
-<div [innerHTML]="userContent"></div>
+<!-- Interactive elements without accessible names -->
+<ion-fab>
+  <ion-fab-button>
+    <ion-icon name="add"></ion-icon>
+  </ion-fab-button>
+</ion-fab>
 
-<!-- Accessibility Issue: Missing attributes -->
-<img src="logo.png">
-<button></button>
-<input type="text">
+<!-- Toggle/checkbox without labels -->
+<ion-toggle></ion-toggle>
+<ion-checkbox></ion-checkbox>
+
+<!-- Modal trigger without description -->
+<button (click)="openModal()">
+  <ion-icon name="menu"></ion-icon>
+</button>
+
+<!-- Expandable content without proper ARIA -->
+<div class="accordion-header" (click)="toggle()">
+  <ion-icon name="chevron-down"></ion-icon>
+  Details
+</div>
+
+<!-- Search input without proper labeling -->
+<ion-searchbar></ion-searchbar>
+
+<!-- Range slider without label -->
+<ion-range min="0" max="100"></ion-range>
+
+<!-- Menu button without description -->
+<ion-menu-button>
+  <ion-icon name="menu"></ion-icon>
+</ion-menu-button>
+
+<!-- Form with multiple unlabeled inputs -->
+<form>
+  <ion-item>
+    <ion-input type="text" placeholder="Enter name"></ion-input>
+  </ion-item>
+  <ion-item>
+    <ion-input type="email" placeholder="Enter email"></ion-input>
+  </ion-item>
+  <ion-item>
+    <ion-textarea placeholder="Enter message"></ion-textarea>
+  </ion-item>
+</form>
