@@ -259,6 +259,12 @@ jobs:
               pull_number: context.issue.number,
             });
 
+            // Get the changed files
+            const { data: files } = await github.rest.pulls.listFiles({
+              ...context.repo,
+              pull_number: context.issue.number,
+            });
+
             // Create a map of file contents
             const fileContents = new Map();
             for (const file of files) {
@@ -281,40 +287,31 @@ jobs:
               }
             }
 
-            async function verifyFix(comment) {
-              const file = comment.path;
-              const fileInfo = fileContents.get(file);
-              
-              // Handle removed files
-              if (!fileInfo || fileInfo.status === 'removed') {
+            async function resolveComment(comment, reason) {
+              try {
                 await github.rest.pulls.createReviewComment({
                   ...context.repo,
                   pull_number: context.issue.number,
                   commit_id: headSha,
                   path: comment.path,
-                  line: comment.line,
-                  body: '✅ Issue resolved - File has been removed.',
-                  in_reply_to: comment.id
+                  body: `✅ ${reason}`,
+                  in_reply_to: comment.id,
+                  line: comment.line
                 });
-                return true;
+                console.log(`Resolved comment in ${comment.path} at line ${comment.line}: ${reason}`);
+              } catch (error) {
+                console.error('Error resolving comment:', error);
               }
+            }
 
-              // Handle removed or changed lines
-              if (comment.line > fileInfo.lines.length || 
-                  (fileInfo.status === 'modified' && !fileInfo.lines[comment.line - 1]?.includes(comment.original_line))) {
-                await github.rest.pulls.createReviewComment({
-                  ...context.repo,
-                  pull_number: context.issue.number,
-                  commit_id: headSha,
-                  path: comment.path,
-                  line: comment.line,
-                  body: '✅ Issue resolved - Code has been modified or removed.',
-                  in_reply_to: comment.id
-                });
-                return true;
-              }
+            // Process each comment
+            for (const comment of comments) {
+              // Skip already resolved comments
+              if (comment.body.includes('✅')) continue;
 
-              // Handle manual resolutions through conversation
+              const fileInfo = fileContents.get(comment.path);
+
+              // Case 1: Check if the comment is already resolved via UI
               const conversationResolved = comments.some(reply => 
                 (reply.in_reply_to === comment.id || reply.id === comment.id) && 
                 (
@@ -324,87 +321,60 @@ jobs:
                   reply.state === 'resolved'
                 )
               );
-              
+
               if (conversationResolved) {
-                await github.rest.pulls.createReviewComment({
-                  ...context.repo,
-                  pull_number: context.issue.number,
-                  commit_id: headSha,
-                  path: comment.path,
-                  line: comment.line,
-                  body: '✅ Issue resolved - Manually marked as resolved.',
-                  in_reply_to: comment.id
-                });
-                return true;
+                await resolveComment(comment, 'Issue resolved - Conversation marked as resolved');
+                continue;
               }
 
-              // Issue-specific verification rules
-              const rules = {
-                'Memory Leak Risk': () => {
-                  return fileInfo.content.includes('takeUntil') || 
-                         fileInfo.content.includes('| async') || 
-                         fileInfo.content.includes('unsubscribe()');
-                },
-                'Security Risk': () => {
-                  const line = fileInfo.lines[comment.line - 1] || '';
-                  return !line.includes('innerHTML') && 
-                         !line.includes('bypassSecurityTrust');
-                },
-                'Accessibility': () => {
-                  const line = fileInfo.lines[comment.line - 1] || '';
-                  if (line.includes('<img')) {
-                    return line.includes('alt=');
-                  }
-                  if (line.includes('<button')) {
-                    return line.includes('aria-label') || 
-                           !line.trim().endsWith('></button>');
-                  }
-                  if (line.includes('<input')) {
-                    return line.includes('aria-label') || 
-                           line.includes('id=');
-                  }
-                  return false;
-                },
-                'Performance': () => {
-                  if (comment.body.toLowerCase().includes('ngfor')) {
-                    const line = fileInfo.lines[comment.line - 1] || '';
-                    return line.includes('trackBy');
-                  }
-                  return false;
-                }
-              };
-
-              // Check if any rule matches and is satisfied
-              for (const [category, checkRule] of Object.entries(rules)) {
-                if (comment.body.includes(category) && checkRule()) {
-                  await github.rest.pulls.createReviewComment({
-                    ...context.repo,
-                    pull_number: context.issue.number,
-                    commit_id: headSha,
-                    path: comment.path,
-                    line: comment.line,
-                    body: `✅ Issue resolved - ${category} has been fixed.`,
-                    in_reply_to: comment.id
-                  });
-                  return true;
-                }
+              // Case 2: File has been removed
+              if (!fileInfo || fileInfo.status === 'removed') {
+                await resolveComment(comment, 'Issue resolved - File has been removed');
+                continue;
               }
 
-              return false;
-            }
+              // Case 3: Line has been changed or removed
+              if (comment.line > fileInfo.lines.length || 
+                  (fileInfo.status === 'modified' && !fileInfo.lines[comment.line - 1]?.includes(comment.original_line))) {
+                await resolveComment(comment, 'Issue resolved - Code has been modified or removed');
+                continue;
+              }
 
-            // Process each comment
-            for (const comment of comments) {
-              // Skip already resolved comments
-              if (comment.body.includes('✅')) continue;
-              
-              try {
-                const isFixed = await verifyFix(comment);
-                if (isFixed) {
-                  core.info(`Resolved comment in ${comment.path} at line ${comment.line}`);
+              // Case 4: Check issue-specific resolutions
+              const commentBody = comment.body.toLowerCase();
+              const line = fileInfo.lines[comment.line - 1] || '';
+
+              // Memory leak fixes
+              if (commentBody.includes('memory leak')) {
+                if (fileInfo.content.includes('takeUntil') || 
+                    fileInfo.content.includes('| async') || 
+                    fileInfo.content.includes('unsubscribe()')) {
+                  await resolveComment(comment, 'Issue resolved - Memory leak fixed');
+                  continue;
                 }
-              } catch (error) {
-                console.error(`Error processing comment: ${error}`);
+              }
+              // Security fixes
+              else if (commentBody.includes('security risk')) {
+                if (!line.includes('innerHTML') && !line.includes('bypassSecurityTrust')) {
+                  await resolveComment(comment, 'Issue resolved - Security issue fixed');
+                  continue;
+                }
+              }
+              // Accessibility fixes
+              else if (commentBody.includes('accessibility')) {
+                if ((line.includes('<img') && line.includes('alt=')) ||
+                    (line.includes('<button') && (line.includes('aria-label') || !line.trim().endsWith('></button>'))) ||
+                    (line.includes('<input') && (line.includes('aria-label') || line.includes('id=')))) {
+                  await resolveComment(comment, 'Issue resolved - Accessibility issue fixed');
+                  continue;
+                }
+              }
+              // Performance fixes
+              else if (commentBody.includes('performance') && commentBody.includes('ngfor')) {
+                if (line.includes('trackBy')) {
+                  await resolveComment(comment, 'Issue resolved - Performance issue fixed');
+                  continue;
+                }
               }
             }
 
@@ -427,5 +397,4 @@ jobs:
             );
 
             if (criticalIssues.length > 0) {
-              core.setFailed(`${criticalIssues.length} critical issues must be resolved before merging.`);
-            }
+              core.setFailed(`${criticalIssues.length} critical issues
