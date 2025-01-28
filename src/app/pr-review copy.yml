@@ -261,6 +261,41 @@ jobs:
                 }
               }
 
+                const stringLiteralsMap = new Map();
+
+                // Collect string literals used in directives
+                lines.forEach((line, index) => {
+                  const directiveMatches = line.match(/\*ng[If|For|Switch]="[^"]*'([^']+)'[^"]*"/g);
+                  if (directiveMatches) {
+                    directiveMatches.forEach(match => {
+                      const literals = match.match(/'([^']+)'/g);
+                      literals?.forEach(literal => {
+                        const clean = literal.replace(/'/g, '');
+                        if (!stringLiteralsMap.has(clean)) {
+                          stringLiteralsMap.set(clean, []);
+                        }
+                        stringLiteralsMap.get(clean).push(index + 1);
+                      });
+                    });
+                  }
+                });
+
+                // Check for repeated string literals
+                stringLiteralsMap.forEach((lines, literal) => {
+                  if (lines.length >= 2) {
+                    const enumName = literal.toUpperCase().replace(/-/g, '_');
+                    const message = `💡 RECOMMENDED: **String Literal Optimization**\n\n` +
+                      `String literal '${literal}' is used ${lines.length} times in Angular directives. ` +
+                      `Consider creating an enum for better type safety and maintainability:\n\n` +
+                      `\`\`\`typescript\nenum Status {\n  ${enumName} = '${literal}',\n  // Add other related status values here\n}\n\`\`\`\n\n` +
+                      `Then update the template to use:\n\`\`\`html\n*ngIf="variable === Status.${enumName}"\n\`\`\`\n\n` +
+                      `Found on lines: ${lines.join(', ')}`;
+                    
+                    createComment(file, lines[0], message);
+                  }
+                });
+
+                
               // Check for dangerous innerHTML bindings
               const innerHtmlLines = lines
                 .map((line, index) => ({ line, index: index + 1 }))
@@ -275,6 +310,8 @@ jobs:
                   'Using [innerHTML] can lead to XSS vulnerabilities. Use Angular\'s DomSanitizer or a safe pipe instead.'
                 );
               }
+
+
             }
 
             async function checkStyleFile(file, content, lines) {
