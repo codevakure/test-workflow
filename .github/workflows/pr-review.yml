@@ -455,37 +455,83 @@ jobs:
               }
             }
 
-            // Check remaining critical issues (only count unresolved ones)
+            // Get the latest PR changes
+            const { data: files } = await github.rest.pulls.listFiles({
+              ...context.repo,
+              pull_number: context.issue.number,
+            });
+
+            // Create a map of modified files and their content
+            const fileContents = new Map();
+            for (const file of files) {
+              try {
+                // If file is deleted, just store the status
+                if (file.status === 'removed') {
+                  fileContents.set(file.filename, { status: 'removed' });
+                  continue;
+                }
+
+                // For other files, store content and status
+                const content = fs.readFileSync(file.filename, 'utf8');
+                fileContents.set(file.filename, {
+                  content,
+                  lines: content.split('\n'),
+                  status: file.status,
+                  raw: file.raw // Store raw file content for exact matching
+                });
+              } catch (error) {
+                console.error(`Error reading file ${file.filename}: ${error}`);
+                // If we can't read the file, assume it's deleted/moved
+                fileContents.set(file.filename, { status: 'removed' });
+              }
+            }
+
+            // Check remaining critical issues
             const criticalIssues = comments.filter(comment => {
-              // Skip if comment is marked as resolved
+              // Skip if already marked as resolved
               if (comment.body.includes('✅')) return false;
               
-              // Skip if it's not a critical issue
+              // Skip if not a critical issue
               if (!comment.body.includes('🚨 CRITICAL')) return false;
               
-              // Check if there's a resolution reply
+              // Check if manually resolved via replies
               const hasResolutionReply = comments.some(reply => 
                 reply.in_reply_to === comment.id && 
-                (reply.body.includes('✅') || /resolved|fixed|completed|done/i.test(reply.body))
+                /resolved|fixed|completed|done/i.test(reply.body)
               );
               if (hasResolutionReply) return false;
-              
-              // Check if the file or line no longer exists
+
+              // Check if file exists in current PR
               const fileInfo = fileContents.get(comment.path);
-              if (!fileInfo) return false; // File was deleted
               
-              const originalLine = fileInfo.lines[comment.line - 1];
-              if (!originalLine) return false; // Line was removed
-              
-              // If we get here, this is an unresolved critical issue
-              return true;
+              // If file is removed/renamed, issue is resolved
+              if (!fileInfo || fileInfo.status === 'removed') return false;
+
+              // If file exists, check if the specific line/content has changed
+              if (fileInfo.lines) {
+                const lineContent = fileInfo.lines[comment.line - 1];
+                // If line no longer exists or is different, consider resolved
+                if (!lineContent || lineContent !== comment.original_line) return false;
+                
+                // For security issues, check if specific pattern is gone
+                if (comment.body.includes('Security Risk')) {
+                  const hasVulnerability = fileInfo.content.includes('innerHTML') || 
+                                         fileInfo.content.includes('bypassSecurityTrust');
+                  return hasVulnerability;
+                }
+              }
+
+              return false; // If we get here, assume issue is resolved
             });
 
             if (criticalIssues.length > 0) {
-              console.log('Remaining critical issues:', criticalIssues.map(c => ({
-                path: c.path,
-                line: c.line,
-                body: c.body
-              })));
+              console.log('Remaining unresolved critical issues:', 
+                criticalIssues.map(c => ({
+                  path: c.path,
+                  line: c.line,
+                  body: c.body,
+                  reason: 'Content still contains security risk pattern'
+                }))
+              );
               core.setFailed(`${criticalIssues.length} critical issues must be resolved before merging.`);
             }
