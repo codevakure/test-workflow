@@ -362,306 +362,56 @@ jobs:
         if: github.event.action == 'synchronize' || github.event.action == 'opened'
         uses: actions/github-script@v7
         with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
             try {
-              // Get all review comments
+              // Get all review comments in a single call
               const { data: comments } = await github.rest.pulls.listReviewComments({
                 ...context.repo,
-                pull_number: context.issue.number,
+                pull_number: context.issue.number
               });
 
-              // Create sets for tracking resolved and outdated comments
-              const resolvedCommentIds = new Set();
-              
-              // Process comments to find resolutions
-              comments.forEach(comment => {
-                // Check for outdated/resolved comments
+              // Resolution indicators to check for
+              const resolutionIndicators = [
+                'show resolved',
+                'resolved',
+                'fixed',
+                'completed',
+                'done',
+                'issue resolved',
+                '✅',
+                'has been fixed',
+                'resolve conversation'
+              ];
+
+              // Get remaining critical issues (not resolved)
+              const criticalIssues = comments.filter(comment => {
+                // Only check bot comments with critical flag
+                if (!comment.body.includes('🚨 CRITICAL') || comment.user.login !== 'github-actions[bot]') {
+                  return false;
+                }
+
+                // Skip outdated comments
                 if (comment.position === null) {
-                  resolvedCommentIds.add(comment.id);
-                  return;
-                }
-
-                // Check if this comment has responses indicating resolution
-                const hasResolutionReply = comments.some(reply => 
-                  reply.in_reply_to === comment.id && 
-                  (
-                    reply.body.includes('✅') ||
-                    /resolved|fixed|completed|done|Issue resolved/i.test(reply.body) ||
-                    reply.body.includes('has been fixed') ||
-                    reply.body.includes('Resolve conversation')
-                  )
-                );
-
-                if (hasResolutionReply) {
-                  resolvedCommentIds.add(comment.id);
-                }
-              });
-
-              // Get all current comments to check for critical issues
-              const currentComments = comments.filter(comment => {
-                // Only look at bot comments with critical issues
-                if (comment.user.login !== 'github-actions[bot]' || !comment.body.includes('🚨 CRITICAL')) {
                   return false;
                 }
 
-                // Skip if comment is resolved
-                if (resolvedCommentIds.has(comment.id)) {
-                  return false;
-                }
+                // Check if comment or its replies contain resolution indicators
+                const relevantComments = [
+                  comment,
+                  ...comments.filter(reply => reply.in_reply_to === comment.id)
+                ];
 
-                // Check comment state (might indicate resolution)
-                if (comment.state === 'resolved') {
-                  return false;
-                }
-
-                return true;
-              });
-
-              // Log remaining critical issues
-              if (currentComments.length > 0) {
-                core.info('Found remaining critical issues:');
-                currentComments.forEach(comment => {
-                  core.info(`- ${comment.path}:${comment.line} - ${comment.body.split('\n')[0]}`);
+                const isResolved = relevantComments.some(c => {
+                  const bodyLower = c.body.toLowerCase();
+                  return resolutionIndicators.some(indicator => 
+                    bodyLower.includes(indicator.toLowerCase())
+                  );
                 });
-                core.setFailed(`${currentComments.length} critical issues must be resolved before merging.`);
-              } else {
-                core.info('All critical issues have been resolved.');
-              }
-            } catch (error) {
-              console.error('Full error:', error);
-              core.setFailed(`Error in verification step: ${error.message}`);
-            }
-            try {
-              // Get PR information
-              const { data: pr } = await github.rest.pulls.get({
-                ...context.repo,
-                pull_number: context.issue.number,
+
+                return !isResolved;
               });
 
-              // Get all review comments
-              const { data: comments } = await github.rest.pulls.listReviewComments({
-                ...context.repo,
-                pull_number: context.issue.number,
-              });
-
-              // Get all reviews with their comments
-              const { data: reviews } = await github.rest.pulls.listReviews({
-                ...context.repo,
-                pull_number: context.issue.number,
-              });
-
-              // Get review comments for each review to check resolution status
-              const resolvedCommentIds = new Set();
-              const outdatedCommentIds = new Set();
-
-              for (const review of reviews) {
-                try {
-                  const { data: reviewComments } = await github.rest.pulls.listCommentsForReview({
-                    ...context.repo,
-                    pull_number: context.issue.number,
-                    review_id: review.id,
-                  });
-
-                  reviewComments.forEach(comment => {
-                    // Check if the comment is part of a resolved conversation
-                    if (comment.state === 'RESOLVED' || review.state === 'DISMISSED') {
-                      resolvedCommentIds.add(comment.id);
-                    }
-                  });
-                } catch (error) {
-                  console.warn(`Error fetching review comments: ${error.message}`);
-                }
-              }
-
-              // Process existing comments
-              const { data: existingComments } = await github.rest.pulls.listReviewComments({
-                ...context.repo,
-                pull_number: context.issue.number,
-              });
-
-              existingComments.forEach(comment => {
-                // Check for manual resolution indicators
-                const hasResolutionReply = existingComments.some(reply => 
-                  reply.in_reply_to === comment.id && 
-                  (
-                    /resolved|fixed|completed|done|Issue resolved/i.test(reply.body) ||
-                    reply.body.includes('✅') ||
-                    reply.body.includes('has been fixed') ||
-                    reply.body.includes('Resolve conversation')
-                  )
-                );
-
-                if (hasResolutionReply || comment.position === null) {
-                  resolvedCommentIds.add(comment.id);
-                }
-              });
-
-              // Get the final comment status after processing
-              const criticalIssues = existingComments.filter(comment => {
-                // Skip non-bot or non-critical comments
-                if (comment.user.login !== 'github-actions[bot]' || !comment.body.includes('🚨 CRITICAL')) {
-                  return false;
-                }
-
-                // Skip resolved comments
-                if (resolvedCommentIds.has(comment.id)) {
-                  return false;
-                }
-
-                // Double check if the comment is resolved through the UI
-                const resolvedInUI = reviews.some(review => 
-                  review.state === 'DISMISSED' && 
-                  review.comments.some(c => c.id === comment.id)
-                );
-
-                return !resolvedInUI;
-              });
-
-              if (criticalIssues.length > 0) {
-                core.info('Found remaining critical issues:');
-                criticalIssues.forEach(issue => {
-                  core.info(`- ${issue.path}:${issue.line} - ${issue.body.split('\n')[0]}`);
-                });
-                core.setFailed(`${criticalIssues.length} critical issues must be resolved before merging.`);
-              } else {
-                core.info('All critical issues have been resolved.');
-              }
-            } catch (error) {
-              console.error('Error in verification step:', error);
-              core.setFailed(`Error in verification step: ${error.message}`);
-            }
-            try {
-              // Get PR information
-              const { data: pr } = await github.rest.pulls.get({
-                ...context.repo,
-                pull_number: context.issue.number,
-              });
-
-              // Get all review comments
-              const { data: comments } = await github.rest.pulls.listReviewComments({
-                ...context.repo,
-                pull_number: context.issue.number,
-              });
-
-              // Get all reviews to check for resolved conversations
-              const { data: reviews } = await github.rest.pulls.listReviews({
-                ...context.repo,
-                pull_number: context.issue.number,
-              });
-
-              // Get full PR details to check for resolved comments
-              const { data: pullRequest } = await github.rest.pulls.get({
-                ...context.repo,
-                pull_number: context.issue.number,
-                headers: {
-                  accept: 'application/vnd.github.comfort-fade-preview+json'
-                }
-              });
-
-              // Get changed files
-              const { data: files } = await github.rest.pulls.listFiles({
-                ...context.repo,
-                pull_number: context.issue.number,
-              });
-
-              // Create sets for tracking resolved and outdated comments
-              const resolvedCommentIds = new Set();
-              const outdatedCommentIds = new Set();
-
-              // Function to check if a comment path and line match a resolved comment
-              function isCommentResolved(comment) {
-                // Check if comment is outdated
-                if (comment.position === null) {
-                  return true;
-                }
-
-                // Check for resolution replies
-                const hasResolutionReply = comments.some(reply => 
-                  reply.in_reply_to === comment.id && 
-                  (
-                    /resolved|fixed|completed|done|Issue resolved/i.test(reply.body) ||
-                    reply.body.includes('✅') ||
-                    reply.body.includes('has been fixed')
-                  )
-                );
-
-                if (hasResolutionReply) {
-                  return true;
-                }
-
-                // Check if the comment's review was dismissed
-                const parentReview = reviews.find(review => review.id === comment.pull_request_review_id);
-                if (parentReview && parentReview.state === 'DISMISSED') {
-                  return true;
-                }
-
-                // Check if comment is in a resolved thread
-                const reviewThreads = pullRequest.review_threads || [];
-                return reviewThreads.some(thread => 
-                  thread.comments.some(threadComment => 
-                    threadComment.id === comment.id && thread.resolved
-                  )
-                );
-              }
-
-              // Track resolved and outdated comments
-              comments.forEach(comment => {
-                if (isCommentResolved(comment)) {
-                  resolvedCommentIds.add(comment.id);
-                }
-                if (comment.position === null) {
-                  outdatedCommentIds.add(comment.id);
-                }
-              });
-
-              // Process all comments
-              for (const comment of comments) {
-                // Skip non-bot comments
-                if (comment.user.login !== 'github-actions[bot]') continue;
-
-                const isResolved = resolvedCommentIds.has(comment.id);
-                const isOutdated = outdatedCommentIds.has(comment.id);
-
-                if (isResolved || isOutdated) {
-                  try {
-                    await github.rest.pulls.deleteReviewComment({
-                      ...context.repo,
-                      comment_id: comment.id
-                    });
-                    core.info(`Deleted ${isOutdated ? 'outdated' : 'resolved'} comment: ${comment.path}:${comment.line}`);
-                  } catch (error) {
-                    core.warning(`Failed to delete comment ${comment.id}: ${error.message}`);
-                  }
-                }
-              }
-
-              // Get final remaining comments after cleanup
-              const { data: finalComments } = await github.rest.pulls.listReviewComments({
-                ...context.repo,
-                pull_number: context.issue.number,
-              });
-
-              // Filter for remaining critical issues
-              const criticalIssues = finalComments.filter(comment => {
-                if (comment.user.login !== 'github-actions[bot]' || !comment.body.includes('🚨 CRITICAL')) {
-                  return false;
-                }
-                
-                // Check if this comment has been resolved
-                if (resolvedCommentIds.has(comment.id) || outdatedCommentIds.has(comment.id)) {
-                  return false;
-                }
-
-                // Additional check for manual resolution
-                if (isCommentResolved(comment)) {
-                  return false;
-                }
-
-                return true;
-              });
-
-              // Log remaining issues
+              // Log results exactly once
               if (criticalIssues.length > 0) {
                 core.info('Found remaining critical issues:');
                 criticalIssues.forEach(issue => {
