@@ -364,74 +364,96 @@ jobs:
         with:
           script: |
             try {
-              // Get all review comments
-              const { data: reviews } = await github.rest.pulls.listReviews({
-                ...context.repo,
-                pull_number: context.issue.number
-              });
-
-              // Get all comments
+              console.log('Starting verification and cleanup of comments...');
+              
               const { data: comments } = await github.rest.pulls.listReviewComments({
                 ...context.repo,
                 pull_number: context.issue.number
               });
 
-              // Create a Set to track resolved comments
               const resolvedCommentIds = new Set();
+              const deletedCommentIds = new Set();
 
-              // Track comments from dismissed reviews
-              reviews.forEach(review => {
-                if (review.state === 'DISMISSED') {
-                  comments.forEach(comment => {
-                    if (comment.pull_request_review_id === review.id) {
-                      resolvedCommentIds.add(comment.id);
+              function isCommentResolved(comment) {
+                const bodyLower = comment.body.toLowerCase();
+                
+                console.log(`Checking comment in ${comment.path}:${comment.line}`);
+                console.log('Comment body:', bodyLower);
+                
+                const resolutionIndicators = [
+                  'resolved',
+                  'fixed',
+                  '✅',
+                  'completed',
+                  'done',
+                  'show resolved',
+                  'has been resolved',
+                  'resolve conversation',
+                  'marked as resolved'
+                ];
+
+                if (comment.position === null) {
+                  console.log('Comment is outdated/resolved due to position being null');
+                  return true;
+                }
+
+                for (const indicator of resolutionIndicators) {
+                  if (bodyLower.includes(indicator)) {
+                    console.log(`Found resolution indicator: ${indicator}`);
+                    return true;
+                  }
+                }
+
+                const conversation = [
+                  comment,
+                  ...comments.filter(reply => reply.in_reply_to === comment.id)
+                ];
+
+                return conversation.some(c => {
+                  const replyLower = c.body.toLowerCase();
+                  return resolutionIndicators.some(indicator => {
+                    const found = replyLower.includes(indicator);
+                    if (found) {
+                      console.log(`Found resolution indicator in reply: ${indicator}`);
                     }
+                    return found;
                   });
-                }
-              });
-
-              // Process comments for resolutions
-              comments.forEach(comment => {
-                // Skip non-bot comments
-                if (comment.user.login !== 'github-actions[bot]') return;
-
-                // Check if the comment is resolved in various ways
-                if (
-                  comment.position === null || // Comment is outdated
-                  comment.state === 'RESOLVED' || // Explicitly resolved
-                  comment.body.toLowerCase().includes('Show resolved') || comment.body.toLowerCase().includes('resolved') // UI resolution
-                ) {
-                  resolvedCommentIds.add(comment.id);
-                  return;
-                }
-
-                // Check for resolution replies
-                const replies = comments.filter(reply => reply.in_reply_to === comment.id);
-                const hasResolutionReply = replies.some(reply => {
-                  const bodyLower = reply.body.toLowerCase();
-                  return (
-                    bodyLower.includes('resolved') ||
-                    bodyLower.includes('fixed') ||
-                    bodyLower.includes('✅') ||
-                    bodyLower.includes('completed') ||
-                    bodyLower.includes('done') ||
-                    bodyLower.includes('show resolved')
-                  );
                 });
+              }
 
-                if (hasResolutionReply) {
+              for (const comment of comments) {
+                if (comment.user.login !== 'github-actions[bot]') continue;
+
+                if (isCommentResolved(comment)) {
                   resolvedCommentIds.add(comment.id);
+                  
+                  if (!deletedCommentIds.has(comment.id)) {
+                    try {
+                      await github.rest.pulls.deleteReviewComment({
+                        ...context.repo,
+                        comment_id: comment.id
+                      });
+                      deletedCommentIds.add(comment.id);
+                      console.log(`Deleted resolved comment: ${comment.path}:${comment.line}`);
+                    } catch (error) {
+                      console.warn(`Failed to delete comment ${comment.id}:`, error.message);
+                    }
+                  }
                 }
+              }
+
+              const { data: remainingComments } = await github.rest.pulls.listReviewComments({
+                ...context.repo,
+                pull_number: context.issue.number
               });
 
-              // Filter for unresolved critical issues
-              const criticalIssues = comments.filter(comment => 
+              const criticalIssues = remainingComments.filter(comment => 
                 comment.user.login === 'github-actions[bot]' &&
                 comment.body.includes('🚨 CRITICAL') &&
-                !resolvedCommentIds.has(comment.id)
+                !resolvedCommentIds.has(comment.id) &&
+                !deletedCommentIds.has(comment.id)
               );
 
-              // Log results
               if (criticalIssues.length > 0) {
                 core.info('Found remaining critical issues:');
                 criticalIssues.forEach(issue => {
@@ -442,6 +464,6 @@ jobs:
                 core.info('All critical issues have been resolved.');
               }
             } catch (error) {
-              core.setFailed(`Error in verification step: ${error.message}`);
               console.error('Full error:', error);
+              core.setFailed(`Error in verification step: ${error.message}`);
             }
