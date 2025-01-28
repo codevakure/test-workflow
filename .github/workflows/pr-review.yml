@@ -466,8 +466,11 @@ jobs:
               return false;
             }
 
-            // Track resolved comments
-            const resolvedCommentIds = new Set();
+            // Re-fetch comments to get latest state including our new resolution comments
+            const { data: updatedComments } = await github.rest.pulls.listReviewComments({
+              ...context.repo,
+              pull_number: context.issue.number,
+            });
 
             // Get review threads to check for resolved conversations
             const { data: reviewThreads } = await github.rest.pulls.listReviewThreads({
@@ -484,7 +487,15 @@ jobs:
                 );
                 
                 if (thread?.isResolved) {
-                  await resolveComment(comment, 'Issue resolved - Thread marked as resolved');
+                  await github.rest.pulls.createReviewComment({
+                    ...context.repo,
+                    pull_number: context.issue.number,
+                    commit_id: headSha,
+                    path: comment.path,
+                    line: comment.line,
+                    body: 'Issue resolved - Thread marked as resolved',
+                    in_reply_to: comment.id
+                  });
                   continue;
                 }
 
@@ -496,7 +507,7 @@ jobs:
                   continue;
                 }
 
-                const isFixed = await verifyFix(comment, resolvedCommentIds);
+                const isFixed = await verifyFix(comment);
                 if (isFixed) {
                   core.info(`Resolved comment in ${comment.path} at line ${comment.line}`);
                 }
@@ -505,14 +516,8 @@ jobs:
               }
             }
 
-            // Re-fetch comments to get latest state including our new resolution comments
-            const { data: updatedComments } = await github.rest.pulls.listReviewComments({
-              ...context.repo,
-              pull_number: context.issue.number,
-            });
-
-            // Check remaining critical issues
-            const criticalIssues = updatedComments.filter(comment => {
+            // Check for remaining unresolved critical issues
+            let remainingCriticalIssues = updatedComments.filter(comment => {
               // Skip if not a critical issue
               if (!comment.body.includes('🚨 CRITICAL')) return false;
 
@@ -532,28 +537,6 @@ jobs:
               return !hasResolution;
             });
 
-            if (criticalIssues.length > 0) {
-              core.setFailed(`${criticalIssues.length} critical issues must be resolved before merging.`);
-            }
-
-            // Check remaining critical issues
-            const criticalIssues = comments.filter(comment => 
-              // Only consider unresolved comments
-              !comment.body.includes('✅') && 
-              // Only consider critical issues
-              comment.body.includes('🚨 CRITICAL') &&
-              // Check if the comment has any resolution replies
-              !comments.some(reply => 
-                reply.in_reply_to === comment.id && 
-                (
-                  /resolved|fixed|completed|done/i.test(reply.body) ||
-                  reply.body.includes('marked conversation as resolved') ||
-                  reply.body.includes('Resolved conversation') ||
-                  reply.state === 'resolved'
-                )
-              )
-            );
-
-            if (criticalIssues.length > 0) {
-              core.setFailed(`${criticalIssues.length} critical issues must be resolved before merging.`);
+            if (remainingCriticalIssues.length > 0) {
+              core.setFailed(`${remainingCriticalIssues.length} critical issues must be resolved before merging.`);
             }
