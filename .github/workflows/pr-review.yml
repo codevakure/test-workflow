@@ -50,12 +50,12 @@ jobs:
               pull_number: context.issue.number,
             });
 
-            // Create a Set of existing comment keys to prevent duplicates
+            // Create a Set of existing comments to prevent duplicates
             const existingComments = new Set(
               comments.map(comment => `${comment.path}:${comment.line}:${comment.body}`)
             );
 
-            // Get the latest PR changes and create file content map
+            // Get the latest PR changes
             const { data: files } = await github.rest.pulls.listFiles({
               ...context.repo,
               pull_number: context.issue.number,
@@ -65,19 +65,16 @@ jobs:
             const fileContents = new Map();
             for (const file of files) {
               try {
-                // If file is deleted, just store the status
                 if (file.status === 'removed') {
                   fileContents.set(file.filename, { status: 'removed' });
                   continue;
                 }
 
-                // For other files, store content and status
                 const content = fs.readFileSync(file.filename, 'utf8');
                 fileContents.set(file.filename, {
                   content,
                   lines: content.split('\n'),
-                  status: file.status,
-                  raw: file.raw
+                  status: file.status
                 });
               } catch (error) {
                 console.error(`Error reading file ${file.filename}: ${error}`);
@@ -85,7 +82,6 @@ jobs:
               }
             }
 
-            // Process comments and files
             async function createComment(file, line, priority, category, message) {
               const priorityEmoji = {
                 critical: '🚨 CRITICAL: ',
@@ -96,7 +92,6 @@ jobs:
               const commentBody = `${priorityEmoji[priority]}**${category}**\n\n${message}`;
               const commentKey = `${file.filename}:${line}:${commentBody}`;
               
-              // Check if comment already exists
               if (!existingComments.has(commentKey)) {
                 await github.rest.pulls.createReviewComment({
                   ...context.repo,
@@ -109,7 +104,91 @@ jobs:
               }
             }
 
-            async function checkFileContent(file, content, lines, fileExt) {
+            async function checkTypeScriptFile(file, content, lines) {
+              // Angular Component Checks
+              if (content.includes('@Component')) {
+                if (!content.includes('ChangeDetectionStrategy.OnPush')) {
+                  await createComment(file, 1, 'recommended', 'Performance Optimization',
+                    'Consider using ChangeDetectionStrategy.OnPush for better performance.'
+                  );
+                }
+
+                // Check for standalone components
+                if (content.includes('standalone: false') || !content.includes('standalone:')) {
+                  await createComment(file, 1, 'recommended', 'Modern Angular Practices',
+                    'Consider using standalone components for better tree-shaking and modularity.'
+                  );
+                }
+              }
+
+              // Observable Memory Leak Checks
+              const subscribeLines = lines
+                .map((line, index) => ({ line, index: index + 1 }))
+                .filter(({ line }) => line.includes('subscribe'));
+              
+              const hasUnsubscribe = content.includes('unsubscribe()') || 
+                                   content.includes('takeUntil') ||
+                                   content.includes('| async');
+              
+              if (subscribeLines.length > 0 && !hasUnsubscribe) {
+                for (const { index } of subscribeLines) {
+                  await createComment(file, index, 'critical', 'Memory Leak Risk',
+                    'Subscription not properly managed. Use takeUntil, async pipe, or manual unsubscription.'
+                  );
+                }
+              }
+            }
+
+            async function checkHtmlFile(file, content, lines) {
+              // Performance Checks
+              const ngForLines = lines
+                .map((line, index) => ({ line, index: index + 1 }))
+                .filter(({ line }) => line.includes('*ngFor') && !line.includes('trackBy'));
+              
+              for (const { index } of ngForLines) {
+                await createComment(file, index, 'critical', 'Performance',
+                  'Add trackBy function to improve performance with *ngFor.'
+                );
+              }
+
+              // Accessibility checks
+              const accessibilityChecks = [
+                {
+                  pattern: /<img[^>]*(?!alt=)[^>]*>/,
+                  message: 'IMG elements must have alt attributes'
+                },
+                {
+                  pattern: /<button[^>]*>(?!\s*[^<]*[^<\s])[^>]*<\/button>/,
+                  message: 'BUTTON elements should have meaningful content'
+                }
+              ];
+
+              for (const check of accessibilityChecks) {
+                const matches = lines
+                  .map((line, index) => ({ line, index: index + 1 }))
+                  .filter(({ line }) => check.pattern.test(line));
+
+                for (const { index } of matches) {
+                  await createComment(file, index, 'critical', 'Accessibility',
+                    check.message
+                  );
+                }
+              }
+            }
+
+            async function checkStyleFile(file, content, lines) {
+              const colorLines = lines
+                .map((line, index) => ({ line, index: index + 1 }))
+                .filter(({ line }) => /#[0-9a-fA-F]{3,6}/.test(line));
+
+              for (const { index } of colorLines) {
+                await createComment(file, index, 'optional', 'Style Management',
+                  'Consider using CSS variables for better maintainability.'
+                );
+              }
+            }
+
+            async function checkFileContent(file, content, lines, extension) {
               // Security Checks
               if (content.includes('innerHTML') || content.includes('bypassSecurityTrust')) {
                 const lineNum = lines.findIndex(line => 
@@ -130,243 +209,21 @@ jobs:
                 css: checkStyleFile
               };
 
-              if (checksMap[fileExt]) {
-                await checksMap[fileExt](file, content, lines);
+              if (checksMap[extension]) {
+                await checksMap[extension](file, content, lines);
               }
             }
 
-            // Process each file
-            for (const file of files) {
-              if (file.status !== 'removed') {
-                const fileInfo = fileContents.get(file.filename);
-                if (fileInfo?.content) {
-                  const fileExt = file.filename.split('.').pop().toLowerCase();
-                  if (['ts', 'html', 'scss', 'css', 'js'].includes(fileExt)) {
-                    await checkFileContent(file, fileInfo.content, fileInfo.lines, fileExt);
-                  }
-                }
-              }
-            }
-
-            async function checkTypeScriptFile(file, content, lines) {
-              // Angular Component Checks
-              if (content.includes('@Component')) {
-                // Skip empty components or components with minimal content
-                const isEmptyComponent = content.trim().split('\n').length <= 5 ||
-                  !content.match(/export\s+class.*\{[\s\S]*\}/);
-                
-                if (isEmptyComponent) {
-                  return; // Skip recommendations for empty files
-                }
-
-                // Check for console.log statements
-                const consoleLogMatches = lines
-                  .map((line, index) => ({ line, index: index + 1 }))
-                  .filter(({ line }) => /console\.(log|debug|info|warn|error)\(/.test(line));
-
-                for (const { index } of consoleLogMatches) {
-                  await createComment(file, index, 'recommended', 'Code Cleanliness',
-                    'Remove console.log statements before pushing to production. Consider using a proper logging service if needed.'
-                  );
-                }
-
-                // Check for empty methods
-                const methodRegex = /(\w+\s*\([^)]*\)\s*{[^}]*})/g;
-                const methods = content.match(methodRegex) || [];
-                
-                for (const method of methods) {
-                  const methodName = method.match(/(\w+)\s*\(/)[1];
-                  const methodContent = method.match(/{([^}]*)}/)[1].trim();
-                  
-                  // Skip constructor if it's meant to be empty
-                  if (methodName === 'constructor' && methodContent === '') {
-                    continue;
-                  }
-                  
-                  // Check if method is empty or only has comments
-                  const isEmptyMethod = !methodContent || methodContent.split('\n')
-                    .every(line => line.trim() === '' || line.trim().startsWith('//'));
-                  
-                  if (isEmptyMethod) {
-                    const lineNum = lines.findIndex(line => line.includes(methodName)) + 1;
-                    await createComment(file, lineNum, 'recommended', 'Code Cleanliness',
-                      `Remove empty method '${methodName}' if it's not being used. If it's meant to be implemented later, add a TODO comment explaining the intended functionality.`
-                    );
-                  }
-                }
-
-                // Only proceed with other checks if the component has actual content
-                if (content.includes('implements') || content.includes('extends') || 
-                    content.match(/\{[\s\S]*\w+[\s\S]*\}/)) {
-                  // Check for ChangeDetectionStrategy
-                  if (!content.includes('ChangeDetectionStrategy.OnPush')) {
-                    await createComment(file, 1, 'recommended', 'Performance Optimization',
-                      'Consider using ChangeDetectionStrategy.OnPush for better performance:\n```typescript\nimport { ChangeDetectionStrategy } from \'@angular/core\';\n\n@Component({\n  // ...\n  changeDetection: ChangeDetectionStrategy.OnPush\n})\n```'
-                    );
-                  }
-
-                  // Continue with other existing checks only for non-empty components...
-                }
-
-                // Check for standalone components
-                if (content.includes('standalone: false') || !content.includes('standalone:')) {
-                  await createComment(file, 1, 'recommended', 'Modern Angular Practices',
-                    'Consider using standalone components for better tree-shaking and modularity:\n```typescript\n@Component({\n  // ...\n  standalone: true,\n  imports: [CommonModule, IonicModule, ...]\n})\n```'
-                  );
-                }
-
-                // Check for ViewEncapsulation
-                if (!content.includes('ViewEncapsulation')) {
-                  await createComment(file, 1, 'recommended', 'Component Configuration',
-                    'Consider explicitly setting ViewEncapsulation for better style control:\n```typescript\nimport { ViewEncapsulation } from \'@angular/core\';\n\n@Component({\n  // ...\n  encapsulation: ViewEncapsulation.Emulated // or .ShadowDom for Ionic\n})\n```'
-                  );
-                }
-
-
-
-
-              }
-
-              // Observable Memory Leak Checks
-              const subscribeLines = lines
-                .map((line, index) => ({ line, index: index + 1 }))
-                .filter(({ line }) => line.includes('subscribe'));
-              
-              const hasUnsubscribe = content.includes('unsubscribe()') || 
-                                   content.includes('takeUntil') ||
-                                   content.includes('| async');
-              
-              if (subscribeLines.length > 0 && !hasUnsubscribe) {
-                for (const { index } of subscribeLines) {
-                  await createComment(file, index, 'critical', 'Memory Leak Risk',
-                    'Subscription not properly managed. Use takeUntil, async pipe, or manual unsubscription.'
-                  );
-                }
-              }
-
-              // Additional TypeScript checks...
-              // (Rest of the TypeScript checks remain the same)
-            }
-
-            async function checkHtmlFile(file, content, lines) {
-              // Track existing issues to prevent duplicates
-              const reportedIssues = new Set();
-
-              // Performance Checks
-              const ngForLines = lines
-                .map((line, index) => ({ line, index: index + 1 }))
-                .filter(({ line }) => line.includes('*ngFor') && !line.includes('trackBy'));
-              
-              for (const { index } of ngForLines) {
-                const issueKey = `${file.filename}:${index}:ngFor`;
-                if (!reportedIssues.has(issueKey)) {
-                  await createComment(file, index, 'critical', 'Performance',
-                    'Add trackBy function to improve performance with *ngFor.'
-                  );
-                  reportedIssues.add(issueKey);
-                }
-              }
-
-              // Ionic Responsive Design Checks
-              const ionResponsivePatterns = [
-                {
-                  pattern: /<ion-(col|grid)[^>]*size="(12|"|\s)*"[^>]*>/,
-                  exclude: /size-[s|m|l|x][mdlgx]=/,
-                  message: 'Consider adding responsive breakpoints (size-sm, size-md, size-lg, size-xl) for better layout adaptation across different screen sizes. Example:\n```html\n<ion-col size="12" size-sm="6" size-md="4" size-lg="3">\n```'
-                },
-                {
-                  pattern: /<ion-grid[^>]*>/,
-                  exclude: /fixed|no-padding/,
-                  message: 'Consider using `fixed` attribute for consistent container width or `no-padding` when nested grids are used. Example:\n```html\n<ion-grid fixed>\n```'
-                },
-                {
-                  pattern: /<ion-row[^>]*>/,
-                  exclude: /wrap|nowrap|reverse|align-items-|justify-content-/,
-                  message: 'Consider adding flex properties for better responsive behavior:\n```html\n<ion-row wrap align-items-center justify-content-between>\n```'
-                }
-              ];
-
-              for (const check of ionResponsivePatterns) {
-                const matches = lines
-                  .map((line, index) => ({ line, index: index + 1 }))
-                  .filter(({ line }) => 
-                    check.pattern.test(line) && 
-                    (!check.exclude || !check.exclude.test(line))
-                  );
-
-                for (const { index } of matches) {
-                  const issueKey = `${file.filename}:${index}:ionic-responsive`;
-                  if (!reportedIssues.has(issueKey)) {
-                    await createComment(file, index, 'recommended', 'Responsive Design',
-                      check.message
-                    );
-                    reportedIssues.add(issueKey);
-                  }
-                }
-              }
-
-              // Accessibility checks with line tracking
-              const accessibilityChecks = [
-                {
-                  pattern: /<img[^>]*(?!alt=)[^>]*>/,
-                  message: 'IMG elements must have alt attributes'
-                },
-                {
-                  pattern: /<button[^>]*>(?!\s*[^<]*[^<\s])[^>]*<\/button>/,
-                  message: 'BUTTON elements should have meaningful content'
-                },
-                {
-                  pattern: /<input[^>]*(?!aria-label|id=)[^>]*>/,
-                  message: 'INPUT elements must have proper accessibility attributes'
-                }
-              ];
-
-              for (const check of accessibilityChecks) {
-                const matches = lines
-                  .map((line, index) => ({ line, index: index + 1 }))
-                  .filter(({ line }) => check.pattern.test(line));
-
-                for (const { index } of matches) {
-                  const issueKey = `${file.filename}:${index}:${check.message}`;
-                  if (!reportedIssues.has(issueKey)) {
-                    await createComment(file, index, 'critical', 'Accessibility',
-                      check.message
-                    );
-                    reportedIssues.add(issueKey);
-                  }
-                }
-              }
-            }
-
-            async function checkStyleFile(file, content, lines) {
-              const colorLines = lines
-                .map((line, index) => ({ line, index: index + 1 }))
-                .filter(({ line }) => /#[0-9a-fA-F]{3,6}/.test(line));
-
-              for (const { index } of colorLines) {
-                await createComment(file, index, 'optional', 'Style Management',
-                  'Consider using CSS variables for better maintainability.'
-                );
-              }
-            }
-
-            // Filter for specific file extensions and process each file
+            // Process files
             const allowedExtensions = ['ts', 'html', 'scss', 'css', 'js'];
             
             for (const file of files) {
-              const fileExt = file.filename.split('.').pop().toLowerCase();
               const fileInfo = fileContents.get(file.filename);
-              
-              if (file.status !== 'removed' && 
-                  allowedExtensions.includes(fileExt) && 
-                  fileInfo?.content) {
-                await checkFileContent(file, fileInfo.content, fileInfo.lines, fileExt);
-              }
-                const content = fs.readFileSync(file.filename, 'utf8');
-                const lines = content.split('\n');
-                const fileExt = file.filename.split('.').pop();
-                
-                await checkFileContent(file, content, lines, fileExt);
+              if (file.status !== 'removed' && fileInfo?.content) {
+                const extension = file.filename.split('.').pop().toLowerCase();
+                if (allowedExtensions.includes(extension)) {
+                  await checkFileContent(file, fileInfo.content, fileInfo.lines, extension);
+                }
               }
             }
 
@@ -377,19 +234,25 @@ jobs:
           script: |
             const fs = require('fs');
             
+            const { data: pr } = await github.rest.pulls.get({
+              ...context.repo,
+              pull_number: context.issue.number,
+            });
+            const latestCommitSha = pr.head.sha;
+
             // Get all review comments
             const { data: comments } = await github.rest.pulls.listReviewComments({
               ...context.repo,
               pull_number: context.issue.number,
             });
 
-            // Get the list of files and their current content
+            // Get the list of files
             const { data: files } = await github.rest.pulls.listFiles({
               ...context.repo,
               pull_number: context.issue.number,
             });
 
-            // Create a map of file paths to their current content
+            // Create a map of file contents
             const fileContents = new Map();
             for (const file of files) {
               if (file.status !== 'removed') {
@@ -402,7 +265,10 @@ jobs:
                   });
                 } catch (error) {
                   console.error(`Error reading file ${file.filename}: ${error}`);
+                  fileContents.set(file.filename, { status: 'removed' });
                 }
+              } else {
+                fileContents.set(file.filename, { status: 'removed' });
               }
             }
 
@@ -410,8 +276,7 @@ jobs:
               const file = comment.path;
               const fileInfo = fileContents.get(file);
               
-              // Handle removed files
-              if (!fileInfo) {
+              if (!fileInfo || fileInfo.status === 'removed') {
                 await github.rest.pulls.createReviewComment({
                   ...context.repo,
                   pull_number: context.issue.number,
@@ -424,157 +289,37 @@ jobs:
                 return true;
               }
 
-              const { content, lines, status } = fileInfo;
+              const { content, lines } = fileInfo;
               
-              // Handle removed or changed lines
-              if (comment.line > lines.length || 
-                  (status === 'modified' && !lines[comment.line - 1]?.includes(comment.original_line))) {
+              if (!lines[comment.line - 1] || 
+                  lines[comment.line - 1] !== comment.original_line) {
                 await github.rest.pulls.createReviewComment({
                   ...context.repo,
                   pull_number: context.issue.number,
                   commit_id: latestCommitSha,
                   path: comment.path,
                   line: comment.line,
-                  body: '✅ Issue resolved - Code has been modified or removed.',
+                  body: '✅ Issue resolved - Code has been modified.',
                   in_reply_to: comment.id
                 });
                 return true;
               }
 
-              // Handle manual resolutions (comments with 'Resolved' or similar keywords)
-              const conversationResolved = comments.some(reply => 
-                reply.in_reply_to === comment.id && 
-                /resolved|fixed|completed|done/i.test(reply.body)
-              );
-              
-              if (conversationResolved) {
-                await github.rest.pulls.createReviewComment({
-                  ...context.repo,
-                  pull_number: context.issue.number,
-                  commit_id: latestCommitSha,
-                  path: comment.path,
-                  line: comment.line,
-                  body: '✅ Issue resolved - Manually marked as resolved.',
-                  in_reply_to: comment.id
-                });
-                return true;
-              }
-
-              // Verification rules for specific issues
-              const rules = {
-                'Responsive Design': () => {
-                  const line = lines[comment.line - 1] || '';
-                  return line.includes('size-sm') || 
-                         line.includes('size-md') || 
-                         line.includes('size-lg') || 
-                         line.includes('size-xl');
-                },
-                'Performance': () => {
-                  if (comment.body.includes('trackBy')) {
-                    return content.includes('trackBy');
-                  }
-                  return false;
-                },
-                // Add other specific rules...
-              };
-
-              const category = Object.keys(rules).find(key => comment.body.includes(key));
-              return category ? rules[category]() : false;
-            }
-
-            // Process each comment
-            for (const comment of comments) {
-              try {
-                // Skip already resolved comments
-                if (comment.body.includes('✅')) continue;
-                
-                const isFixed = await verifyFix(comment);
-                if (isFixed) {
-                  // Mark the comment as resolved by adding a checkmark
-                  core.info(`Resolved comment in ${comment.path} at line ${comment.line}`);
-                }
-              } catch (error) {
-                console.error(`Error processing comment: ${error}`);
-              }
-            }
-
-            // Get the latest PR changes
-            const { data: files } = await github.rest.pulls.listFiles({
-              ...context.repo,
-              pull_number: context.issue.number,
-            });
-
-            // Create a map of modified files and their content
-            const fileContents = new Map();
-            for (const file of files) {
-              try {
-                // If file is deleted, just store the status
-                if (file.status === 'removed') {
-                  fileContents.set(file.filename, { status: 'removed' });
-                  continue;
-                }
-
-                // For other files, store content and status
-                const content = fs.readFileSync(file.filename, 'utf8');
-                fileContents.set(file.filename, {
-                  content,
-                  lines: content.split('\n'),
-                  status: file.status,
-                  raw: file.raw // Store raw file content for exact matching
-                });
-              } catch (error) {
-                console.error(`Error reading file ${file.filename}: ${error}`);
-                // If we can't read the file, assume it's deleted/moved
-                fileContents.set(file.filename, { status: 'removed' });
-              }
+              return false;
             }
 
             // Check remaining critical issues
-            const criticalIssues = comments.filter(comment => {
-              // Skip if already marked as resolved
-              if (comment.body.includes('✅')) return false;
-              
-              // Skip if not a critical issue
-              if (!comment.body.includes('🚨 CRITICAL')) return false;
-              
-              // Check if manually resolved via replies
-              const hasResolutionReply = comments.some(reply => 
-                reply.in_reply_to === comment.id && 
-                /resolved|fixed|completed|done/i.test(reply.body)
-              );
-              if (hasResolutionReply) return false;
-
-              // Check if file exists in current PR
-              const fileInfo = fileContents.get(comment.path);
-              
-              // If file is removed/renamed, issue is resolved
-              if (!fileInfo || fileInfo.status === 'removed') return false;
-
-              // If file exists, check if the specific line/content has changed
-              if (fileInfo.lines) {
-                const lineContent = fileInfo.lines[comment.line - 1];
-                // If line no longer exists or is different, consider resolved
-                if (!lineContent || lineContent !== comment.original_line) return false;
-                
-                // For security issues, check if specific pattern is gone
-                if (comment.body.includes('Security Risk')) {
-                  const hasVulnerability = fileInfo.content.includes('innerHTML') || 
-                                         fileInfo.content.includes('bypassSecurityTrust');
-                  return hasVulnerability;
+            const criticalIssues = [];
+            for (const comment of comments) {
+              if (!comment.body.includes('✅') && 
+                  comment.body.includes('🚨 CRITICAL')) {
+                const isResolved = await verifyFix(comment);
+                if (!isResolved) {
+                  criticalIssues.push(comment);
                 }
               }
-
-              return false; // If we get here, assume issue is resolved
-            });
+            }
 
             if (criticalIssues.length > 0) {
-              console.log('Remaining unresolved critical issues:', 
-                criticalIssues.map(c => ({
-                  path: c.path,
-                  line: c.line,
-                  body: c.body,
-                  reason: 'Content still contains security risk pattern'
-                }))
-              );
               core.setFailed(`${criticalIssues.length} critical issues must be resolved before merging.`);
             }
