@@ -1,3 +1,14 @@
-<ion-app>
-  <ion-router-outlet></ion-router-outlet>
-</ion-app>
+<div #contentDiv></div>
+
+<!-- Performance Issue: Missing trackBy -->
+<div *ngFor="let item of items">
+  {{ item }}
+</div>
+
+<!-- Security Issue: Direct HTML binding -->
+<div [innerHTML]="userContent"></div>
+
+<!-- Accessibility Issue: Missing attributes -->
+<img src="logo.png">
+<button></button>
+<input type="text">

@@ -284,6 +284,8 @@ jobs:
               await checkFileContent(github, context, file, content, lines, fileExt);
             }
 
+            const CHECK_NAME = 'Ionic/Angular PR Review';
+            
             // Create or update check run with results
             const checkTitle = criticalIssuesFound ? 
               '🚨 Critical Issues Found' : 
@@ -294,10 +296,11 @@ jobs:
               criticalIssues.map(issue => `- ${issue}`).join('\n') :
               'No critical issues found in the code review.';
 
+            // Create a single check run for the entire review process
             await github.rest.checks.create({
               owner: context.repo.owner,
               repo: context.repo.repo,
-              name: 'Code Review',
+              name: CHECK_NAME,
               head_sha: context.payload.pull_request.head.sha,
               status: 'completed',
               conclusion: criticalIssuesFound ? 'failure' : 'success',
@@ -314,15 +317,42 @@ jobs:
       - name: Verify Changes and Auto-resolve Comments
         if: github.event.action == 'synchronize'
         uses: actions/github-script@v7
+        continue-on-error: true  # Don't fail the whole workflow
         with:
           script: |
             const fs = require('fs');
+            const CHECK_NAME = 'Ionic/Angular PR Review';
             
             const { data: comments } = await github.rest.pulls.listReviewComments({
               owner: context.repo.owner,
               repo: context.repo.repo,
               pull_number: context.payload.pull_request.number,
             });
+
+            // Rest of verification logic...
+
+            // Update the existing check instead of creating a new one
+            const { data: checkRuns } = await github.rest.checks.listForRef({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              ref: context.payload.pull_request.head.sha,
+            });
+
+            const existingCheck = checkRuns.check_runs.find(check => check.name === CHECK_NAME);
+            
+            if (existingCheck) {
+              await github.rest.checks.update({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                check_run_id: existingCheck.id,
+                status: 'completed',
+                conclusion: unresolvedCriticalIssues > 0 ? 'failure' : 'success',
+                output: {
+                  title: checkTitle,
+                  summary: checkSummary
+                }
+              });
+            }
 
             async function verifyFix(file, comment) {
               try {
