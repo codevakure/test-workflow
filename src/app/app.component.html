@@ -1,0 +1,34 @@
+<div class="app-container">
+  <!-- Critical Issue 7: Missing alt attribute for accessibility -->
+  <img src="logo.png">
+
+  <!-- Critical Issue 8: Empty button without aria-label -->
+  <button></button>
+
+  <!-- Critical Issue 9: Input without label or aria-label -->
+  <input type="text" placeholder="Search...">
+
+  <!-- Issue: Complex ngFor without trackBy -->
+  <div *ngFor="let notification of notifications">
+      <span>{{notification.title}}</span>
+      <span>{{notification.date}}</span>
+      <span>{{notification.status}}</span>
+  </div>
+
+  <!-- Issue: String literals that should be enums -->
+  <div [ngSwitch]="userStatus">
+      <span *ngSwitchCase="'active-user'">Active</span>
+      <span *ngSwitchCase="'inactive-user'">Inactive</span>
+      <span *ngSwitchCase="'blocked-user'">Blocked</span>
+  </div>
+
+  <!-- Issue: Using string literals multiple times -->
+  <div *ngIf="userStatus === 'active-user'">
+      Welcome back!
+  </div>
+
+  <!-- Critical Issue 10: Dangerous innerHTML binding -->
+  <div [innerHTML]="htmlContent"></div>
+
+  <div [innerHTML]="displayContent('Some content')"></div>
+</div>
