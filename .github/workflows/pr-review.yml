@@ -36,6 +36,13 @@ jobs:
           script: |
             const fs = require('fs');
             
+            // Get the latest commit SHA from the PR
+            const { data: pr } = await github.rest.pulls.get({
+              ...context.repo,
+              pull_number: context.issue.number,
+            });
+            const latestCommitSha = pr.head.sha;
+            
             // Store existing comments to prevent duplicates
             const existingComments = new Map();
             const { data: currentComments } = await github.rest.pulls.listReviewComments({
@@ -63,7 +70,7 @@ jobs:
                 await github.rest.pulls.createReviewComment({
                   ...context.repo,
                   pull_number: context.issue.number,
-                  commit_id: file.sha,
+                  commit_id: latestCommitSha,
                   path: file.filename,
                   body: commentBody,
                   line: line
@@ -265,7 +272,7 @@ jobs:
                   await github.rest.pulls.createReviewComment({
                     ...context.repo,
                     pull_number: context.issue.number,
-                    commit_id: comment.commit_id,
+                    commit_id: latestCommitSha,
                     path: comment.path,
                     line: comment.line,
                     body: '✅ Issue resolved based on implemented changes.',
