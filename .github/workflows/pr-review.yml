@@ -108,11 +108,61 @@ jobs:
             async function checkTypeScriptFile(file, content, lines) {
               // Angular Component Checks
               if (content.includes('@Component')) {
-                // Check for ChangeDetectionStrategy
-                if (!content.includes('ChangeDetectionStrategy.OnPush')) {
-                  await createComment(file, 1, 'recommended', 'Performance Optimization',
-                    'Consider using ChangeDetectionStrategy.OnPush for better performance:\n```typescript\nimport { ChangeDetectionStrategy } from \'@angular/core\';\n\n@Component({\n  // ...\n  changeDetection: ChangeDetectionStrategy.OnPush\n})\n```'
+                // Skip empty components or components with minimal content
+                const isEmptyComponent = content.trim().split('\n').length <= 5 ||
+                  !content.match(/export\s+class.*\{[\s\S]*\}/);
+                
+                if (isEmptyComponent) {
+                  return; // Skip recommendations for empty files
+                }
+
+                // Check for console.log statements
+                const consoleLogMatches = lines
+                  .map((line, index) => ({ line, index: index + 1 }))
+                  .filter(({ line }) => /console\.(log|debug|info|warn|error)\(/.test(line));
+
+                for (const { index } of consoleLogMatches) {
+                  await createComment(file, index, 'recommended', 'Code Cleanliness',
+                    'Remove console.log statements before pushing to production. Consider using a proper logging service if needed.'
                   );
+                }
+
+                // Check for empty methods
+                const methodRegex = /(\w+\s*\([^)]*\)\s*{[^}]*})/g;
+                const methods = content.match(methodRegex) || [];
+                
+                for (const method of methods) {
+                  const methodName = method.match(/(\w+)\s*\(/)[1];
+                  const methodContent = method.match(/{([^}]*)}/)[1].trim();
+                  
+                  // Skip constructor if it's meant to be empty
+                  if (methodName === 'constructor' && methodContent === '') {
+                    continue;
+                  }
+                  
+                  // Check if method is empty or only has comments
+                  const isEmptyMethod = !methodContent || methodContent.split('\n')
+                    .every(line => line.trim() === '' || line.trim().startsWith('//'));
+                  
+                  if (isEmptyMethod) {
+                    const lineNum = lines.findIndex(line => line.includes(methodName)) + 1;
+                    await createComment(file, lineNum, 'recommended', 'Code Cleanliness',
+                      `Remove empty method '${methodName}' if it's not being used. If it's meant to be implemented later, add a TODO comment explaining the intended functionality.`
+                    );
+                  }
+                }
+
+                // Only proceed with other checks if the component has actual content
+                if (content.includes('implements') || content.includes('extends') || 
+                    content.match(/\{[\s\S]*\w+[\s\S]*\}/)) {
+                  // Check for ChangeDetectionStrategy
+                  if (!content.includes('ChangeDetectionStrategy.OnPush')) {
+                    await createComment(file, 1, 'recommended', 'Performance Optimization',
+                      'Consider using ChangeDetectionStrategy.OnPush for better performance:\n```typescript\nimport { ChangeDetectionStrategy } from \'@angular/core\';\n\n@Component({\n  // ...\n  changeDetection: ChangeDetectionStrategy.OnPush\n})\n```'
+                    );
+                  }
+
+                  // Continue with other existing checks only for non-empty components...
                 }
 
                 // Check for standalone components
@@ -129,28 +179,9 @@ jobs:
                   );
                 }
 
-                // Check for lifecycle interfaces
-                const lifecycleHooks = ['OnInit', 'OnDestroy', 'AfterViewInit', 'OnChanges'];
-                const implementedHooks = lifecycleHooks.filter(hook => content.includes(hook));
-                const declaredInterfaces = content.includes('implements') ? 
-                  content.match(/implements\s+([^{]+)/)[1].split(',').map(i => i.trim()) : [];
-                
-                const missingInterfaces = implementedHooks.filter(hook => 
-                  !declaredInterfaces.includes(hook)
-                );
 
-                if (missingInterfaces.length > 0) {
-                  await createComment(file, 1, 'recommended', 'Type Safety',
-                    `Implement interfaces for used lifecycle hooks:\n\`\`\`typescript\nexport class HomePage implements ${missingInterfaces.join(', ')} {\n}\n\`\`\``
-                  );
-                }
 
-                // Empty component checks
-                if (content.match(/export\s+class\s+\w+\s*{[\s\n]*constructor\(\)\s*{}[\s\n]*}/)) {
-                  await createComment(file, 1, 'optional', 'Component Structure',
-                    'Consider adding proper lifecycle hooks and documentation for this component:\n```typescript\nexport class HomePage implements OnInit {\n  constructor() {}\n\n  ngOnInit() {\n    // Initialize component\n  }\n}\n```'
-                  );
-                }
+
               }
 
               // Observable Memory Leak Checks
@@ -425,15 +456,36 @@ jobs:
             }
 
             // Check remaining critical issues (only count unresolved ones)
-            const criticalIssues = comments.filter(comment => 
-              !comment.body.includes('✅') && // Not marked as resolved
-              comment.body.includes('🚨 CRITICAL') && 
-              !comments.some(reply => // No resolution reply
+            const criticalIssues = comments.filter(comment => {
+              // Skip if comment is marked as resolved
+              if (comment.body.includes('✅')) return false;
+              
+              // Skip if it's not a critical issue
+              if (!comment.body.includes('🚨 CRITICAL')) return false;
+              
+              // Check if there's a resolution reply
+              const hasResolutionReply = comments.some(reply => 
                 reply.in_reply_to === comment.id && 
                 (reply.body.includes('✅') || /resolved|fixed|completed|done/i.test(reply.body))
-              )
-            );
+              );
+              if (hasResolutionReply) return false;
+              
+              // Check if the file or line no longer exists
+              const fileInfo = fileContents.get(comment.path);
+              if (!fileInfo) return false; // File was deleted
+              
+              const originalLine = fileInfo.lines[comment.line - 1];
+              if (!originalLine) return false; // Line was removed
+              
+              // If we get here, this is an unresolved critical issue
+              return true;
+            });
 
             if (criticalIssues.length > 0) {
-              core.setFailed('Critical issues must be resolved before merging.');
+              console.log('Remaining critical issues:', criticalIssues.map(c => ({
+                path: c.path,
+                line: c.line,
+                body: c.body
+              })));
+              core.setFailed(`${criticalIssues.length} critical issues must be resolved before merging.`);
             }
