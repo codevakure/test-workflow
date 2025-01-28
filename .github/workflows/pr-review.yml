@@ -364,54 +364,74 @@ jobs:
         with:
           script: |
             try {
-              // Get all review comments in a single call
+              // Get all review comments
+              const { data: reviews } = await github.rest.pulls.listReviews({
+                ...context.repo,
+                pull_number: context.issue.number
+              });
+
+              // Get all comments
               const { data: comments } = await github.rest.pulls.listReviewComments({
                 ...context.repo,
                 pull_number: context.issue.number
               });
 
-              // Resolution indicators to check for
-              const resolutionIndicators = [
-                'show resolved',
-                'resolved',
-                'fixed',
-                'completed',
-                'done',
-                'issue resolved',
-                '✅',
-                'has been fixed',
-                'resolve conversation'
-              ];
+              // Create a Set to track resolved comments
+              const resolvedCommentIds = new Set();
 
-              // Get remaining critical issues (not resolved)
-              const criticalIssues = comments.filter(comment => {
-                // Only check bot comments with critical flag
-                if (!comment.body.includes('🚨 CRITICAL') || comment.user.login !== 'github-actions[bot]') {
-                  return false;
+              // Track comments from dismissed reviews
+              reviews.forEach(review => {
+                if (review.state === 'DISMISSED') {
+                  comments.forEach(comment => {
+                    if (comment.pull_request_review_id === review.id) {
+                      resolvedCommentIds.add(comment.id);
+                    }
+                  });
+                }
+              });
+
+              // Process comments for resolutions
+              comments.forEach(comment => {
+                // Skip non-bot comments
+                if (comment.user.login !== 'github-actions[bot]') return;
+
+                // Check if the comment is resolved in various ways
+                if (
+                  comment.position === null || // Comment is outdated
+                  comment.state === 'RESOLVED' || // Explicitly resolved
+                  comment.body.toLowerCase().includes('show resolved') // UI resolution
+                ) {
+                  resolvedCommentIds.add(comment.id);
+                  return;
                 }
 
-                // Skip outdated comments
-                if (comment.position === null) {
-                  return false;
-                }
-
-                // Check if comment or its replies contain resolution indicators
-                const relevantComments = [
-                  comment,
-                  ...comments.filter(reply => reply.in_reply_to === comment.id)
-                ];
-
-                const isResolved = relevantComments.some(c => {
-                  const bodyLower = c.body.toLowerCase();
-                  return resolutionIndicators.some(indicator => 
-                    bodyLower.includes(indicator.toLowerCase())
+                // Check for resolution replies
+                const replies = comments.filter(reply => reply.in_reply_to === comment.id);
+                const hasResolutionReply = replies.some(reply => {
+                  const bodyLower = reply.body.toLowerCase();
+                  return (
+                    bodyLower.includes('resolved') ||
+                    bodyLower.includes('fixed') ||
+                    bodyLower.includes('✅') ||
+                    bodyLower.includes('completed') ||
+                    bodyLower.includes('done') ||
+                    bodyLower.includes('show resolved')
                   );
                 });
 
-                return !isResolved;
+                if (hasResolutionReply) {
+                  resolvedCommentIds.add(comment.id);
+                }
               });
 
-              // Log results exactly once
+              // Filter for unresolved critical issues
+              const criticalIssues = comments.filter(comment => 
+                comment.user.login === 'github-actions[bot]' &&
+                comment.body.includes('🚨 CRITICAL') &&
+                !resolvedCommentIds.has(comment.id)
+              );
+
+              // Log results
               if (criticalIssues.length > 0) {
                 core.info('Found remaining critical issues:');
                 criticalIssues.forEach(issue => {
