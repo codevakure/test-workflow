@@ -34,8 +34,11 @@ jobs:
       - name: Fetch source and destination branches
         id: fetch_branches
         run: |
-          base_ref=${{ steps.pr_details.outputs.base_ref }}
-          head_ref=${{ steps.pr_details.outputs.head_ref }}
+          base_ref="${{ github.event.pull_request.base.ref }}"  # The destination branch (where the PR is being merged into)
+          head_ref="${{ github.event.pull_request.head.ref }}"  # The source branch (from which the PR is made)
+          
+          echo "Base Ref: $base_ref"
+          echo "Head Ref: $head_ref"
           
           git fetch origin $base_ref
           git fetch origin $head_ref
