@@ -84,141 +84,73 @@ jobs:
             }
 
             async function checkTypeScriptFile(file, content, lines) {
-              // Check for memory leaks in subscriptions
-              const subscribeLines = lines
-                .map((line, index) => ({ line, index: index + 1 }))
-                .filter(({ line }) => {
-                  // Only match actual subscribe calls, not comments or strings
-                  const isComment = line.trim().startsWith('//') || line.trim().startsWith('/*');
-                  const isActualSubscribe = /\.subscribe\s*\(/.test(line);
-                  return !isComment && isActualSubscribe;
-                });
+                  // Check for memory leaks in subscriptions
+                  const subscribeLines = lines
+                        .map((line, index) => ({ line, index: index + 1 }))
+                        .filter(({ line }) => {
+                              const isComment = line.trim().startsWith('//') || line.trim().startsWith('/*');
+                              const isActualSubscribe = /\.subscribe\s*\(/.test(line);
+                              return !isComment && isActualSubscribe;
+                        });
 
-              for (const { line, index } of subscribeLines) {
-                // Check for proper subscription management in the component
-                const relevantContent = content.split('\n')
-                  .slice(Math.max(0, index - 10), index + 10)
-                  .join('\n'); // Look at surrounding context
+                  for (const { line, index } of subscribeLines) {
+                        const relevantContent = content.split('\n')
+                              .slice(Math.max(0, index - 10), index + 10)
+                              .join('\n'); // Look at surrounding context
 
-                const hasUnsubscribe = 
-                  // Check for takeUntil pattern
-                  /\.pipe\s*\(\s*takeUntil\s*\(/.test(relevantContent) ||
-                  // Check for async pipe in corresponding template
-                  /\|\s*async/.test(content) ||
-                  // Check for proper unsubscribe in ngOnDestroy
-                  /ngOnDestroy\s*\(\s*\)\s*{[^}]*this\.[^.]+\.unsubscribe\s*\(\s*\)/.test(content);
-                
-                if (!hasUnsubscribe) {
-                  await createComment(file, index, 'critical', 'Memory Leak Risk',
-                    `This subscription at ${file.filename}:${index} lacks proper cleanup.\n\n` +
-                    `Memory leaks occur when subscriptions remain active after component destruction. You should:\n\n` +
-                    `1. Use \`.pipe(takeUntil(this.destroy$))\` pattern:\n` +
-                    `\`\`\`typescript\n` +
-                    `private destroy$ = new Subject<void>();\n\n` +
-                    `this.someService.getData().pipe(\n` +
-                    `  takeUntil(this.destroy$)\n` +
-                    `).subscribe(data => { ... });\n` +
-                    `\`\`\`\n\n` +
-                    `2. OR use the async pipe in template:\n` +
-                    `\`\`\`html\n` +
-                    `<div>{{ data$ | async }}</div>\n` +
-                    `\`\`\`\n\n` +
-                    `3. OR manually unsubscribe in ngOnDestroy:\n` +
-                    `\`\`\`typescript\n` +
-                    `ngOnDestroy() {\n` +
-                    `  this.subscription.unsubscribe();\n` +
-                    `}\n` +
-                    `\`\`\``
-                  );
-                }
-              }
+                        const hasUnsubscribe = 
+                              /\.pipe\s*\(\s*takeUntil\s*\(/.test(relevantContent) ||
+                              /\|\s*async/.test(content) ||
+                              /ngOnDestroy\s*\(\s*\)\s*{[^}]*this\.[^.]+\.unsubscribe\s*\(\s*\)/.test(content);
 
-              // Check for security vulnerabilities
-              const securityLines = lines
-                .map((line, index) => ({ line, index: index + 1 }))
-                .filter(({ line }) => {
-                  // Ignore comments
-                  if (line.trim().startsWith('//') || line.trim().startsWith('/*')) return false;
-                  
-                  // Check for actual security-sensitive patterns
-                  return (
-                    /\binnerHTML\s*=/.test(line) || 
-                    /bypassSecurityTrust\w+\s*\(/.test(line)
-                  );
-                });
+                        if (!hasUnsubscribe) {
+                              await createComment(file, index, 'critical', 'Memory Leak Risk', 
+                                     `This subscription at ${file.filename}:${index} lacks proper cleanup.\n` + 
+                                     `Memory leaks occur when subscriptions remain active after component destruction.\n` +
+                                     `You should:\n\n` +
+                                     `1. Use .pipe(takeUntil(this.destroy$)) pattern\n` +
+                                     `2. OR use the async pipe in template\n` +
+                                     `3. OR manually unsubscribe in ngOnDestroy`);
+                        }
+                  }
 
-              for (const { line, index } of securityLines) {
-                const isInnerHTML = /\binnerHTML\s*=/.test(line);
-                const message = isInnerHTML ?
-                  `Direct innerHTML manipulation at ${file.filename}:${index} creates an XSS vulnerability.\n\n` +
-                  `Cross-Site Scripting (XSS) can occur when untrusted HTML is rendered. Instead:\n\n` +
-                  `1. For trusted HTML, use Angular's DomSanitizer:\n` +
-                  `\`\`\`typescript\n` +
-                  `constructor(private sanitizer: DomSanitizer) {}\n\n` +
-                  `safeHtml = this.sanitizer.sanitize(SecurityContext.HTML, userHtml);\n` +
-                  `\`\`\`\n\n` +
-                  `2. For text content, use textContent or interpolation:\n` +
-                  `\`\`\`typescript\n` +
-                  `element.textContent = content; // DOM\n` +
-                  `{{ content }} // Template\n` +
-                  `\`\`\`` :
-                  `Bypassing security sanitization at ${file.filename}:${index} is dangerous.\n\n` +
-                  `Using bypassSecurityTrust* methods skips Angular's XSS protections. Instead:\n\n` +
-                  `1. Use appropriate SecurityContext sanitization:\n` +
-                  `\`\`\`typescript\n` +
-                  `this.sanitizer.sanitize(SecurityContext.HTML, content);\n` +
-                  `\`\`\`\n\n` +
-                  `2. Or create a custom safe pipe for specific use cases:\n` +
-                  `\`\`\`typescript\n` +
-                  `@Pipe({ name: 'safeHtml' })\n` +
-                  `export class SafeHtmlPipe {\n` +
-                  `  transform(html: string): SafeHtml {\n` +
-                  `    return this.sanitizer.sanitize(SecurityContext.HTML, html);\n` +
-                  `  }\n` +
-                  `}\n` +
-                  `\`\`\``;
-                
-                await createComment(file, index, 'critical', 'Security Risk', message);
-              }
+                  // Check for security vulnerabilities
+                  const securityLines = lines
+                        .map((line, index) => ({ line, index: index + 1 }))
+                        .filter(({ line }) => {
+                              if (line.trim().startsWith('//') || line.trim().startsWith('/*')) return false;
+                              return /\binnerHTML\s*=/.test(line) || /bypassSecurityTrust\w+\s*\(/.test(line) || 
+                                     /\bdocument\.write\s*\(/.test(line) || /eval\s*\(/.test(line);
+                        });
 
-              // Check for console.log statements
-              const consoleLines = lines
-                .map((line, index) => ({ line, index: index + 1 }))
-                .filter(({ line }) => {
-                  // Ignore comments
-                  const isComment = line.trim().startsWith('//') || line.trim().startsWith('/*');
-                  const hasConsole = /console\.(log|debug|info)\(/.test(line);
-                  return !isComment && hasConsole;
-                });
+                  for (const { line, index } of securityLines) {
+                        const isInnerHTML = /\binnerHTML\s*=/.test(line);
+                        const message = isInnerHTML ? 
+                              `Direct innerHTML manipulation at ${file.filename}:${index} creates an XSS vulnerability.` :
+                              `Bypassing security sanitization at ${file.filename}:${index} is dangerous.`;
 
-              for (const { index } of consoleLines) {
-                await createComment(file, index, 'recommended', 'Code Cleanliness',
-                  'Remove console.log statement from production code.'
-                );
-              }
+                        await createComment(file, index, 'critical', 'Security Risk', message);
+                  }
 
-              // Check for empty methods
-              const methodRegex = /(\w+\s*\([^)]*\)\s*{[^}]*})/g;
-              const methods = content.match(methodRegex) || [];
-              
-              for (const method of methods) {
-                const methodName = method.match(/(\w+)\s*\(/)[1];
-                const methodContent = method.match(/{([^}]*)}/)[1].trim();
-                
-                if (methodName === 'constructor' && methodContent === '') {
-                  continue;
-                }
-                
-                const isEmptyMethod = !methodContent || methodContent.split('\n')
-                  .every(line => line.trim() === '' || line.trim().startsWith('//'));
-                
-                if (isEmptyMethod) {
-                  const lineNum = lines.findIndex(line => line.includes(methodName)) + 1;
-                  await createComment(file, lineNum, 'recommended', 'Code Cleanliness',
-                    `Remove empty method '${methodName}' if it's not being used. If it's meant to be implemented later, add a TODO comment explaining the intended functionality.`
-                  );
-                }
-              }
+                  // Check for unsafe eval usage
+                  const evalLines = lines
+                        .map((line, index) => ({ line, index: index + 1 }))
+                        .filter(({ line }) => /eval\s*\(/.test(line));
+
+                  for (const { line, index } of evalLines) {
+                        await createComment(file, index, 'critical', 'Security Risk', 
+                               `The use of eval() at ${file.filename}:${index} can lead to security risks. Avoid dynamic code execution.`);
+                  }
+
+                  // Check for possible 'any' types for stricter typing
+                  const anyTypeLines = lines
+                        .map((line, index) => ({ line, index: index + 1 }))
+                        .filter(({ line }) => /\bany\s+/.test(line));
+
+                  for (const { line, index } of anyTypeLines) {
+                        await createComment(file, index, 'recommended', 'Type Safety', 
+                               `The use of 'any' type at ${file.filename}:${index} reduces type safety. Specify a more specific type.`);
+                  }
             }
 
             async function checkHtmlFile(file, content, lines) {
