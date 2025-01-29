@@ -11,17 +11,10 @@ import { DomSanitizer } from '@angular/platform-browser';
 export class AppComponent implements OnDestroy {
   varun!: string;
   hello!: string;
-  private destroy$ = new Subject<void>(); // For takeUntil pattern
   subscription: any; // For testing 'any' type issue
 
   constructor(private sanitizer: DomSanitizer) {}
 
-  // Simulating a subscription without takeUntil or unsubscribe
-  subscribeToData() {
-    this.subscription = this.someService.getData().subscribe((data) => {
-      console.log(data);
-    });
-  }
 
 
   // Example of 'any' type issue
