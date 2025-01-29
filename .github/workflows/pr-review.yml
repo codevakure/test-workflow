@@ -303,26 +303,76 @@ jobs:
               }
 
               // Check accessibility issues
-              for (let i = 0; i < lines.length; i++) {
-                const line = lines[i];
-                if (line.trim().startsWith('<!--')) continue;
+              // Check accessibility issues for form elements, buttons, select, images, and text-containing elements
+               for (let i = 0; i < lines.length; i++) {
+                      const line = lines[i];
+                      if (line.trim().startsWith('<!--')) continue;
 
-                if (line.includes('<img') && !line.includes('alt=')) {
-                  await createComment(file, i + 1, 'critical', 'Accessibility',
-                    'Add alt attribute to image for screen reader support.'
-                  );
-                }
-                if (line.includes('<button') && !line.includes('aria-label') && line.trim().endsWith('></button>')) {
-                  await createComment(file, i + 1, 'critical', 'Accessibility',
-                    'Empty button needs aria-label for screen reader support.'
-                  );
-                }
-                if (line.includes('<input') && !line.includes('aria-label') && !line.includes('id=')) {
-                  await createComment(file, i + 1, 'critical', 'Accessibility',
-                    'Input needs an associated label or aria-label for accessibility.'
-                  );
-                }
-              }
+                      // Check for <img> elements - Ensure alt text is present or the image is marked as decorative
+                      if (line.includes('<img') && !line.includes('alt=')) {
+                             await createComment(file, i + 1, 'critical', 'Accessibility',
+                                    'Add alt attribute to image for screen reader support. ' +
+                                    'Example: <img src="image.jpg" alt="Description of the image">'
+                             );
+                      }
+
+                      // Check for buttons - Ensure aria-label, id, or proper accessible name
+                      if (line.includes('<button') && !line.includes('aria-label') && !line.includes('id=')) {
+                             await createComment(file, i + 1, 'critical', 'Accessibility',
+                                    'Button needs aria-label or id for screen reader support and automation. ' +
+                                    'Example: <button id="submitButton" aria-label="Submit form">Submit</button>'
+                             );
+                      }
+
+                      // Check for select elements - Ensure aria-label, id, or associated label
+                      if (line.includes('<select') && !line.includes('aria-label') && !line.includes('id=')) {
+                             await createComment(file, i + 1, 'critical', 'Accessibility',
+                                    'Select element needs aria-label or id for screen reader support and automation. ' +
+                                    'Example: <select id="dropdown" aria-label="Select a country"><option>USA</option></select>'
+                             );
+                      }
+
+                      // Check for form elements - Ensure id is present for accessibility and automation
+                      if (line.includes('<input') && !line.includes('aria-label') && !line.includes('id=')) {
+                             await createComment(file, i + 1, 'critical', 'Accessibility',
+                                    'Input element needs an associated label, aria-label, or id for accessibility and automation. ' +
+                                    'Example: <input type="text" id="username" aria-label="Enter your username">'
+                             );
+                      }
+
+                      // Check for text-containing elements (headings, paragraphs, links) - Ensure proper structure and ids for automation
+                      if (line.includes('<h') && !line.includes('id=')) {
+                             await createComment(file, i + 1, 'recommended', 'Accessibility',
+                                    'Heading should ideally have an id for automation and accessibility purposes. ' +
+                                    'Example: <h2 id="section2">Section 2: Introduction</h2>'
+                             );
+                      }
+
+                      if (line.includes('<p') && !line.includes('id=')) {
+                             await createComment(file, i + 1, 'recommended', 'Accessibility',
+                                    'Paragraph should ideally have an id for automation and accessibility purposes, especially if it contains important content. ' +
+                                    'Example: <p id="intro">This is the introduction paragraph.</p>'
+                             );
+                      }
+
+                      if (line.includes('<a')) {
+                             // Check if the <a> tag has an href attribute
+                             if (!line.includes('href=')) {
+                                    await createComment(file, i + 1, 'critical', 'Accessibility',
+                                           'Anchor tag ( <a> ) needs an href attribute to function as a link. ' +
+                                           'Example: <a href="#contact">Go to Contact Section</a>'
+                                    );
+                             }
+
+                             // Check if the <a> tag needs an aria-label
+                             if (line.includes('<a') && !line.includes('aria-label') && (line.includes('<img') || line.includes('>Click here<'))) {
+                                    await createComment(file, i + 1, 'critical', 'Accessibility',
+                                           'Anchor tag needs an aria-label or text content that clearly describes the link’s purpose. ' +
+                                           'Example: <a href="#more-info" aria-label="Learn more about our services">Click here</a>'
+                                    );
+                             }
+                      }
+               }
 
               // Check for dangerous innerHTML bindings
               const innerHtmlLines = lines
