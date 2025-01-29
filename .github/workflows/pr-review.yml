@@ -307,86 +307,28 @@ jobs:
                 const line = lines[i];
                 if (line.trim().startsWith('<!--')) continue;
 
-               if (
-                    (line.includes('<img') && !line.includes('alt=')) ||
-                    (line.includes('<a') && (!line.includes('href=') || (!line.includes('aria-label=') && !line.includes('title=')))) ||
-                    (line.includes('<button') && (!line.includes('aria-label') || !line.includes('id='))) ||
-                    ((line.includes('<input') || line.includes('<select') || line.includes('<textarea')) &&
-                         !line.includes('aria-label') && !line.includes('id='))
-               ) {
-                    let comments = [];
-
-                    if (line.includes('<img') && !line.includes('alt=')) {
-                         comments.push(
-                              'Add an `alt` attribute to the <img> tag to provide alternative text for screen readers. For example:\n' +
-                              '```html\n<img src="image.jpg" alt="Description of the image">\n```\n' +
-                              'If the image is purely decorative, use an empty `alt` attribute: `alt=""`.'
-                         );
-                    }
-
-                    if (line.includes('<a')) {
-                         if (!line.includes('href=')) {
-                              comments.push(
-                                   'Add an `href` attribute to the <a> tag to specify the link destination. For example:\n' +
-                                   '```html\n<a href="/path/to/page">Link Text</a>\n```\n' +
-                                   'If the link is used for JavaScript functionality, consider using a <button> instead.'
-                              );
-                         }
-                         if (!line.includes('aria-label=') && !line.includes('title=')) {
-                              comments.push(
-                                   'Consider adding an `aria-label` or `title` attribute to the <a> tag to provide additional context for screen readers. For example:\n' +
-                                   '```html\n<a href="/path/to/page" aria-label="Link description">Link Text</a>\n```\n' +
-                                   'Or with `title`:\n' +
-                                   '```html\n<a href="/path/to/page" title="Link description">Link Text</a>\n```'
-                              );
-                         }
-                    }
-
-                    if (line.includes('<button')) {
-                         if (!line.includes('aria-label')) {
-                              comments.push(
-                                   'Add an `aria-label` attribute to the <button> tag to provide a clear label. For example:\n' +
-                                   '```html\n<button aria-label="Button Label">Click me</button>\n```\n' +
-                                   'This helps screen readers and assistive technologies identify the button's purpose.'
-                              );
-                         }
-                         if (!line.includes('id=')) {
-                              comments.push(
-                                   'Add an `id` attribute to the <button> tag to uniquely identify it if necessary for scripting or accessibility. For example:\n' +
-                                   '```html\n<button id="button-id">Click me</button>\n```'
-                              );
-                         }
-                    }
-
-                    if ((line.includes('<input') || line.includes('<select') || line.includes('<textarea')) &&
-                         !line.includes('aria-label') && !line.includes('id=')) {
-                         let tagName = line.includes('<input')
-                              ? 'input'
-                              : line.includes('<select')
-                              ? 'select'
-                              : 'textarea';
-
-                         comments.push(
-                              `Add an \`id\` attribute to the <${tagName}> tag and associate it with a <label>. For example:\n` +
-                              '```html\n<label for="element-id">Label Text</label>\n' +
-                              `<${tagName} id="element-id"></${tagName}>\n```\n` +
-                              `Alternatively, add an \`aria-label\` attribute to provide a label directly:\n` +
-                              '```html\n' +
-                              `<${tagName} aria-label="Label Text"></${tagName}>\n```\n` +
-                              'This helps screen readers and assistive technologies identify the element purpose.'
-                         );
-                    }
-
-                    if (comments.length > 0) {
-                         await createComment(
-                              file,
-                              i + 1,
-                              'critical',
-                              'Accessibility',
-                              comments.join('\n\n')
-                         );
-                    }
-               }
+                if (line.includes('<img') && !line.includes('alt=')) {
+                  await createComment(file, i + 1, 'critical', 'Accessibility',
+                    'Add an `alt` attribute to the <img> tag to provide alternative text for screen readers. For example:\n' +
+                    '```html\n<img src="image.jpg" alt="Description of the image">\n```\n' +
+                    'If the image is purely decorative, use an empty `alt` attribute: `alt=""`.'
+                  );
+                }
+                if (line.includes('<button') && !line.includes('aria-label') && line.trim().endsWith('></button>')) {
+                  await createComment(file, i + 1, 'critical', 'Accessibility',
+                    'Add inner text or an `aria-label` attribute to the <button> tag to provide a clear label. For example:\n' +
+                    '```html\n<button>Button Text</button>\n```\n' +
+                    'Or with `aria-label`:\n' +
+                    '```html\n<button aria-label="Button Label"></button>\n```\n' +
+                    'Avoid using empty buttons without any text or ARIA label.'
+                }
+                if (line.includes('<input') && !line.includes('aria-label') && !line.includes('id=')) {
+                  await createComment(file, i + 1, 'critical', 'Accessibility',
+                    'Add an `id` attribute to the <input> tag and associate it with a <label>. For example:\n' +
+                     '```html\n<label for="input-id">Label Text</label>\n<input type="text" id="input-id">\n```\n' +
+                     'This helps screen readers and assistive technologies identify the input purpose.'
+                  );
+                }
               }
 
               // Check for dangerous innerHTML bindings
