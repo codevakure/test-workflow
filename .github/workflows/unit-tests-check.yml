@@ -1,3 +1,23 @@
+# Required Repository Variables:
+# 1. UNIT_TEST_EXECUTION (repository variable)
+#    - Description: Controls whether unit tests should run for this repository
+#    - Type: String
+#    - Allowed values: 'true' or 'false'
+#    - How to set: Repository Settings > Secrets and variables > Variables > New repository variable
+#    - Example: UNIT_TEST_EXECUTION = 'true'
+#
+# 2. COVERAGE_THRESHOLD (repository variable)
+#    - Description: Minimum required code coverage percentage
+#    - Type: Number (as string)
+#    - Default: 80 (if not set)
+#    - How to set: Repository Settings > Secrets and variables > Variables > New repository variable
+#    - Example: COVERAGE_THRESHOLD = '90'
+#
+# Prerequisites:
+# - Angular project with test configuration
+# - Configured karma.conf.js for coverage reporting
+# - Appropriate test scripts in package.json
+
 name: Unit Test Check
 
 on:
