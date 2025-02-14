@@ -130,13 +130,25 @@ jobs:
                     }
                     
                     // Prepare new comment
-                    let message = "";
+                    let message = "**❌ Validation Failed**\n\n";
+                    message += "**Review PR Guidelines**\n\n";
+                    
                     if (process.env.BRANCH_VALID === 'false') {
-                      message += "**❌ Validation Failed**\n\n";
-                      message += "**Review PR Guidelines**\n\n" +
-                                "Please follow our PR creation guidelines:\n" +
-                                "www.example.com";
+                      message += "❗ Branch Name Error:\n" +
+                                "- Branch names must follow the pattern: `<type>-AB#<number>-<description>`\n" +
+                                "- Valid types are: feature, sprint, us, hotfix, bug\n" +
+                                "- Example: `feature-AB#123-add-login-page`\n\n";
                     }
+                    
+                    if (process.env.PR_TITLE_VALID === 'false') {
+                      message += "❗ PR Title Error:\n" +
+                                "- PR titles must follow the pattern: `<type> AB#<number> <description>`\n" +
+                                "- Valid types are: feature, sprint, us, hotfix, bug\n" +
+                                "- Example: `feature AB#123 Add login page`\n\n";
+                    }
+                    
+                    message += "Please follow our PR creation guidelines:\n" +
+                              "www.example.com";
                     
                     // Post new comment
                     await github.rest.issues.createComment({
