@@ -1,11 +1,5 @@
 name: Branch and PR Title Check
 
-# Required GitHub Variables:
-# - No additional variables needed. This workflow uses the default GITHUB_TOKEN
-#
-# Note: The default GITHUB_TOKEN is automatically created by GitHub Actions
-# and has the necessary permissions defined in the "permissions" section
-
 on:
     pull_request:
         types: [opened, edited]
@@ -138,10 +132,10 @@ jobs:
                     // Prepare new comment
                     let message = "";
                     if (process.env.BRANCH_VALID === 'false') {
-                    message += "**❌ Validation Failed**\n\n";
-                    message += `**Review PR Guidelines**\n\n" +
-                                  "Please follow our PR creation guidelines:\n" +
-                                  "www.example.com";
+                      message += "**❌ Validation Failed**\n\n";
+                      message += "**Review PR Guidelines**\n\n" +
+                                "Please follow our PR creation guidelines:\n" +
+                                "www.example.com";
                     }
                     
                     // Post new comment
