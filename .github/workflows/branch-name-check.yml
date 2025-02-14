@@ -150,11 +150,11 @@ jobs:
                     message += "**Review PR Guidelines**\n\n";
                     
                     if (process.env.BRANCH_VALID === 'false') {
-                      message += `❗ Branch Name Error: \`\u001b[31m${process.env.PR_TITLE}\u001b[0m\`\n``
+                      message += `❗ Branch Name Error: \`\u001b[31m${process.env.BRANCH_NAME}\u001b[0m\`\n`
                     }
                     
                     if (process.env.PR_TITLE_VALID === 'false') {
-                      message += `❗ PR Title Error: \`\u001b[31m${process.env.PR_TITLE}\u001b[0m\`\n``
+                      message += `❗ PR Title Error: \`\u001b[31m${process.env.PR_TITLE}\u001b[0m\`\n`
                     }
                     
                     message += "Please follow our PR creation guidelines:\n" +
