@@ -71,37 +71,23 @@ jobs:
                       fi
                   done
                   
-                  # Split PR title for initial prefix check
-                  FIRST_PART=$(echo "$PR_TITLE_LOWER" | cut -d ' ' -f1)
-                  REMAINDER=$(echo "$PR_TITLE_LOWER" | cut -d ' ' -f2-)
+                  # First, check for exception prefixes
+                  for EXCEPTION in "${EXCEPTION_PREFIXES[@]}"; do
+                      if [[ "$PR_TITLE" == "$EXCEPTION"* ]]; then
+                          echo "PR_TITLE_VALID=true" >> $GITHUB_ENV
+                          echo "PR title '$PR_TITLE' is an exception and is valid."
+                          exit 0
+                      fi
+                  done
                   
-                  # Check if first part matches prefix (either directly or with hyphen)
+                  # For non-exception cases, validate the format
                   for PREFIX in "${VALID_PREFIXES[@]}"; do
                       PREFIX_LOWER=$(echo "$PREFIX" | tr '[:upper:]' '[:lower:]')
                       
-                      # Check three formats:
-                      # 1. <type> AB#<number> <description>
-                      # 2. <type>-AB#<number>-<description>
-                      # 3. <type>-AB#<number> <description>
-                      
-                      if [[ "$FIRST_PART" == "$PREFIX_LOWER" || "$FIRST_PART" == "$PREFIX_LOWER-"* ]]; then
-                          # For space-separated format
-                          if [[ "$FIRST_PART" == "$PREFIX_LOWER" && "$REMAINDER" =~ ^ab#[0-9]+[[:space:]].+$ ]]; then
-                              PREFIX_MATCHES=true
-                              break
-                          fi
-                          
-                          # For hyphenated format
-                          if [[ "$FIRST_PART" == "$PREFIX_LOWER-ab#"* && "$FIRST_PART" =~ ^.*-ab#[0-9]+$ && -n "$REMAINDER" ]]; then
-                              PREFIX_MATCHES=true
-                              break
-                          fi
-                          
-                          # For mixed format (<type>-AB#<number> <description>)
-                          if [[ "$FIRST_PART" == "$PREFIX_LOWER-ab#"* && "$FIRST_PART" =~ ^.*-ab#[0-9]+$ && -n "$REMAINDER" ]]; then
-                              PREFIX_MATCHES=true
-                              break
-                          fi
+                      # Allow either space or hyphen after prefix, then AB#number, then any description
+                      if [[ "$PR_TITLE_LOWER" =~ ^$PREFIX_LOWER[-[:space:]]ab#[0-9]+.+ ]]; then
+                          PREFIX_MATCHES=true
+                          break
                       fi
                   done
                   
@@ -147,14 +133,14 @@ jobs:
                     
                     // Prepare new comment
                     let message = "**❌ Validation Failed**\n\n";
-                    message += "**Review PR Guidelines**\n\n";
+                    message += "**Review PR Guidelines**\n";
                     
                     if (process.env.BRANCH_VALID === 'false') {
-                      message += `❗ Branch Name Error: \`\u001b[31m${process.env.BRANCH_NAME}\u001b[0m\`\n`
+                      message += ❗ Branch Name Error: \${process.env.BRANCH_NAME}`\n\n`
                     }
                     
                     if (process.env.PR_TITLE_VALID === 'false') {
-                      message += `❗ PR Title Error: \`\u001b[31m${process.env.PR_TITLE}\u001b[0m\`\n`
+                      message += ❗ PR Title Error: \${process.env.PR_TITLE}`\n\n`
                     }
                     
                     message += "Please follow our PR creation guidelines:\n" +
