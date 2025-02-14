@@ -137,10 +137,8 @@ jobs:
                     
                     // Prepare new comment
                     let message = "";
-                    message += "**❌ Validation Failed**\n\n";
-                    let message = "";
-                    message += "**❌ Validation Failed**\n\n";
                     if (process.env.BRANCH_VALID === 'false') {
+                    message += "**❌ Validation Failed**\n\n";
                     message += `**Review PR Guidelines**\n\n" +
                                   "Please follow our PR creation guidelines:\n" +
                                   "www.example.com";
