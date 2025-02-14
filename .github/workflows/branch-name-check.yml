@@ -71,20 +71,9 @@ jobs:
                       fi
                   done
                   
-                  # First, check for exception prefixes
-                  for EXCEPTION in "${EXCEPTION_PREFIXES[@]}"; do
-                      if [[ "$PR_TITLE" == "$EXCEPTION"* ]]; then
-                          echo "PR_TITLE_VALID=true" >> $GITHUB_ENV
-                          echo "PR title '$PR_TITLE' is an exception and is valid."
-                          exit 0
-                      fi
-                  done
-                  
-                  # For non-exception cases, validate the format
                   for PREFIX in "${VALID_PREFIXES[@]}"; do
                       PREFIX_LOWER=$(echo "$PREFIX" | tr '[:upper:]' '[:lower:]')
                       
-                      # Allow either space or hyphen after prefix, then AB#number, then any description
                       if [[ "$PR_TITLE_LOWER" =~ ^$PREFIX_LOWER[-[:space:]]ab#[0-9]+.+ ]]; then
                           PREFIX_MATCHES=true
                           break
@@ -98,24 +87,19 @@ jobs:
                       echo "PR_TITLE_VALID=false" >> $GITHUB_ENV
                       echo "::error::Invalid PR title. Check PR comments for details."
                   fi
-                  
-            - name: Manage PR Comments
-              if: env.BRANCH_VALID == 'false' || env.PR_TITLE_VALID == 'false'
+
+            # This step always runs to clean up old comments
+            - name: Delete Previous Validation Comments
               uses: actions/github-script@v6
-              env:
-                  BRANCH_NAME: ${{ github.event.pull_request.head.ref }}
-                  PR_TITLE: ${{ github.event.pull_request.title }}
               with:
                   github-token: ${{ github.token }}
                   script: |
-                    // First, get all existing comments
                     const { data: comments } = await github.rest.issues.listComments({
                       owner: context.repo.owner,
                       repo: context.repo.repo,
                       issue_number: context.issue.number
                     });
                     
-                    // Delete existing validation comments
                     for (const comment of comments) {
                       if (comment.body.includes('Validation Failed') &&
                           comment.user.login === 'github-actions[bot]') {
@@ -130,23 +114,29 @@ jobs:
                         }
                       }
                     }
-                    
-                    // Prepare new comment
-                    let message = "**❌ Validation Failed**\n\n";
-                    message += "**Review PR Guidelines**\n";
+
+            # This step only runs when validation fails
+            - name: Create Validation Failure Comment
+              if: env.BRANCH_VALID == 'false' || env.PR_TITLE_VALID == 'false'
+              uses: actions/github-script@v6
+              env:
+                  BRANCH_NAME: ${{ github.event.pull_request.head.ref }}
+                  PR_TITLE: ${{ github.event.pull_request.title }}
+              with:
+                  github-token: ${{ github.token }}
+                  script: |
+                    let message = "**❌ Validation Failed**\n";
                     
                     if (process.env.BRANCH_VALID === 'false') {
-                      message += ❗ Branch Name Error: \${process.env.BRANCH_NAME}`\n\n`
+                      message += `❗ Branch Name Error: ${process.env.BRANCH_NAME}\n\n`;
                     }
                     
                     if (process.env.PR_TITLE_VALID === 'false') {
-                      message += ❗ PR Title Error: \${process.env.PR_TITLE}`\n\n`
+                      message += `❗ PR Title Error: ${process.env.PR_TITLE}\n\n`;
                     }
+                    message += "**Review PR Guidelines**\n";
+                    message += "[PR creation guidelines](www.example.com)";
                     
-                    message += "Please follow our PR creation guidelines:\n" +
-                              "www.example.com";
-                    
-                    // Post new comment
                     await github.rest.issues.createComment({
                       issue_number: context.issue.number,
                       owner: context.repo.owner,
