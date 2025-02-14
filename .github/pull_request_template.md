@@ -16,6 +16,9 @@
 - [ ] Yes
 - [ ] No
 
+## Description
+<!-- Provide a detailed description of the changes. Include the context, motivation, and any relevant background information -->
+
 ## UI Platform Standards Compliance
 <!-- Please check one option below -->
 - [ ] Yes
