@@ -135,7 +135,7 @@ jobs:
                       message += `**❌ PR Title Validation Failed: ${process.env.PR_TITLE}**\n\n`;
                     }
                     message += "**Review PR Guidelines**\n";
-                    message += "[PR creation guidelines](www.example.com)";
+                    message += "<a href='www.example.com' target='_blank'>PR creation guidelines</a>";
                     
                     await github.rest.issues.createComment({
                       issue_number: context.issue.number,
