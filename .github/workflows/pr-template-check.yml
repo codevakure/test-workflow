@@ -1,12 +1,3 @@
-# Required GitHub Variables:
-# - No additional variables needed. This workflow uses the default GITHUB_TOKEN
-#
-# Note: The default GITHUB_TOKEN is automatically created by GitHub Actions and
-# has the necessary permissions defined in the "permissions" section below
-#
-# Environment Variables Set During Run:
-# - MISSING_FIELDS: List of template sections that are missing or incomplete
-
 name: PR Template Check
 
 on:
@@ -92,7 +83,7 @@ jobs:
           echo "PR template validation passed"
 
       - name: Manage PR Comments
-        if: failure()
+        if: always()
         uses: actions/github-script@v6
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
@@ -120,11 +111,12 @@ jobs:
               }
             }
 
-            // Create new comment with current validation results
-            const missingFields = process.env.MISSING_FIELDS.split('\n').filter(Boolean);
-            
-            let message = ""
-            message += "**❌ PR Template Validation Failed**\n\n"
+            // Only create new comment if validation failed
+            if (process.env.MISSING_FIELDS) {
+              const missingFields = process.env.MISSING_FIELDS.split('\n').filter(Boolean);
+              
+              let message = ""
+              message += "**❌ PR Template Validation Failed**\n\n"
             message += "This pull request does not follow the required template. "
             message += "Please update the PR description to include the following missing or incomplete sections:\n\n"
             
@@ -138,9 +130,10 @@ jobs:
             message += "3. Breaking Changes (indicate yes/no)\n"
             message += "4. UI Platform Standards Compliance (confirm compliance)\n"
 
-            await github.rest.issues.createComment({
-                issue_number: context.issue.number,
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                body: message
-            });
+              await github.rest.issues.createComment({
+                  issue_number: context.issue.number,
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  body: message
+              });
+            }
