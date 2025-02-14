@@ -124,7 +124,7 @@ jobs:
                 message += `- ${field}\n`
             });
             
-            message += "\n### Required Template Sections:\n"
+            message += "\n**Required Template Sections:**\n"
             message += "1. Description (must include detailed information)\n"
             message += "2. Type of Change (select at least one option)\n"
             message += "3. Breaking Changes (indicate yes/no)\n"
