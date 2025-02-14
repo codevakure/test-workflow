@@ -71,20 +71,36 @@ jobs:
                       fi
                   done
                   
-                  # Split PR title into words
-                  read -ra TITLE_WORDS <<< "$PR_TITLE_LOWER"
+                  # Split PR title for initial prefix check
+                  FIRST_PART=$(echo "$PR_TITLE_LOWER" | cut -d ' ' -f1)
+                  REMAINDER=$(echo "$PR_TITLE_LOWER" | cut -d ' ' -f2-)
                   
-                  # Check if first word matches prefix
+                  # Check if first part matches prefix (either directly or with hyphen)
                   for PREFIX in "${VALID_PREFIXES[@]}"; do
                       PREFIX_LOWER=$(echo "$PREFIX" | tr '[:upper:]' '[:lower:]')
-                      if [[ "${TITLE_WORDS[0]}" == "$PREFIX_LOWER" ]]; then
-                          # Check if second part contains AB#number
-                          if [[ "${TITLE_WORDS[1]}" =~ ^ab#[0-9]+$ ]]; then
-                              # Check if there's description after AB#number
-                              if [[ ${#TITLE_WORDS[@]} -gt 2 ]]; then
-                                  PREFIX_MATCHES=true
-                                  break
-                              fi
+                      
+                      # Check three formats:
+                      # 1. <type> AB#<number> <description>
+                      # 2. <type>-AB#<number>-<description>
+                      # 3. <type>-AB#<number> <description>
+                      
+                      if [[ "$FIRST_PART" == "$PREFIX_LOWER" || "$FIRST_PART" == "$PREFIX_LOWER-"* ]]; then
+                          # For space-separated format
+                          if [[ "$FIRST_PART" == "$PREFIX_LOWER" && "$REMAINDER" =~ ^ab#[0-9]+[[:space:]].+$ ]]; then
+                              PREFIX_MATCHES=true
+                              break
+                          fi
+                          
+                          # For hyphenated format
+                          if [[ "$FIRST_PART" == "$PREFIX_LOWER-ab#"* && "$FIRST_PART" =~ ^.*-ab#[0-9]+$ && -n "$REMAINDER" ]]; then
+                              PREFIX_MATCHES=true
+                              break
+                          fi
+                          
+                          # For mixed format (<type>-AB#<number> <description>)
+                          if [[ "$FIRST_PART" == "$PREFIX_LOWER-ab#"* && "$FIRST_PART" =~ ^.*-ab#[0-9]+$ && -n "$REMAINDER" ]]; then
+                              PREFIX_MATCHES=true
+                              break
                           fi
                       fi
                   done
@@ -142,9 +158,16 @@ jobs:
                     
                     if (process.env.PR_TITLE_VALID === 'false') {
                       message += "❗ PR Title Error:\n" +
-                                "- PR titles must follow the pattern: `<type> AB#<number> <description>`\n" +
+                                `- Current PR Title: \`\u001b[31m${process.env.PR_TITLE}\u001b[0m\`\n` +
+                                "- PR titles must follow one of these patterns:\n" +
+                                "  1. `<type> AB#<number> <description>`\n" +
+                                "  2. `<type>-AB#<number>-<description>`\n" +
+                                "  3. `<type>-AB#<number> <description>`\n" +
                                 "- Valid types are: feature, sprint, us, hotfix, bug\n" +
-                                "- Example: `feature AB#123 Add login page`\n\n";
+                                "- Examples:\n" +
+                                "  - `feature AB#123 Add login page`\n" +
+                                "  - `us-AB#123455-test local setup`\n" +
+                                "  - `feature-AB#123 Add login page`\n\n";
                     }
                     
                     message += "Please follow our PR creation guidelines:\n" +
