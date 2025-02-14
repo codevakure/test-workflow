@@ -77,11 +77,21 @@ jobs:
                       fi
                   done
                   
+                  # Split PR title into words
+                  read -ra TITLE_WORDS <<< "$PR_TITLE_LOWER"
+                  
+                  # Check if first word matches prefix
                   for PREFIX in "${VALID_PREFIXES[@]}"; do
                       PREFIX_LOWER=$(echo "$PREFIX" | tr '[:upper:]' '[:lower:]')
-                      if [[ "$PR_TITLE_LOWER" =~ ^"$PREFIX_LOWER"-ab#[0-9]+-[a-z0-9][a-z0-9-]*$ ]]; then
-                          PREFIX_MATCHES=true
-                          break
+                      if [[ "${TITLE_WORDS[0]}" == "$PREFIX_LOWER" ]]; then
+                          # Check if second part contains AB#number
+                          if [[ "${TITLE_WORDS[1]}" =~ ^ab#[0-9]+$ ]]; then
+                              # Check if there's description after AB#number
+                              if [[ ${#TITLE_WORDS[@]} -gt 2 ]]; then
+                                  PREFIX_MATCHES=true
+                                  break
+                              fi
+                          fi
                       fi
                   done
                   
@@ -92,7 +102,7 @@ jobs:
                       echo "PR_TITLE_VALID=false" >> $GITHUB_ENV
                       echo "::error::Invalid PR title. Check PR comments for details."
                   fi
-
+                  
             - name: Manage PR Comments
               if: env.BRANCH_VALID == 'false' || env.PR_TITLE_VALID == 'false'
               uses: actions/github-script@v6
@@ -128,31 +138,12 @@ jobs:
                     // Prepare new comment
                     let message = "";
                     message += "**❌ Validation Failed**\n\n";
-                    
+                    let message = "";
+                    message += "**❌ Validation Failed**\n\n";
                     if (process.env.BRANCH_VALID === 'false') {
-                      message += "**Branch Name Error**\n";
-                      message += `Branch name '${process.env.BRANCH_NAME}' does not follow the required format.\n\n`;
-                      message += "Required format:\n";
-                      message += "- Must start with: feature, sprint, us, hotfix, or bug (case insensitive)\n";
-                      message += "- Must include AB# followed by numbers\n";
-                      message += "- Must have a descriptive name\n\n";
-                      message += "Valid examples:\n";
-                      message += "- feature-AB#123456-add-payment-integration\n";
-                      message += "- us-AB#78901-update-user-profile\n";
-                      message += "- hotfix-AB#23456-fix-login-issue\n\n";
-                    }
-                    
-                    if (process.env.PR_TITLE_VALID === 'false') {
-                      message += "**PR Title Error**\n";
-                      message += `PR title '${process.env.PR_TITLE}' does not follow the required format.\n\n`;
-                      message += "Required format:\n";
-                      message += "- Must start with: feature, sprint, us, hotfix, or bug (case insensitive)\n";
-                      message += "- Must include AB# followed by numbers\n";
-                      message += "- Must have a descriptive name\n\n";
-                      message += "Valid examples:\n";
-                      message += "- feature-AB#123456-add-payment-integration\n";
-                      message += "- us-AB#78901-update-user-profile\n";
-                      message += "- hotfix-AB#23456-fix-login-issue\n";
+                    message += `**Review PR Guidelines**\n\n" +
+                                  "Please follow our PR creation guidelines:\n" +
+                                  "www.example.com";
                     }
                     
                     // Post new comment
