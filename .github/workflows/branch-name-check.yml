@@ -128,11 +128,11 @@ jobs:
                     let message = "";
                     
                     if (process.env.BRANCH_VALID === 'false') {
-                      message += `**❌ Branch Name Error: ${process.env.BRANCH_NAME}**\n\n`;
+                      message += `**❌ Branch Name Validation Failed: ${process.env.BRANCH_NAME}**\n\n`;
                     }
                     
                     if (process.env.PR_TITLE_VALID === 'false') {
-                      message += `**❌ PR Title Error: ${process.env.PR_TITLE}**\n\n`;
+                      message += `**❌ PR Title Validation Failed: ${process.env.PR_TITLE}**\n\n`;
                     }
                     message += "**Review PR Guidelines**\n";
                     message += "[PR creation guidelines](www.example.com)";
