@@ -38,7 +38,19 @@ jobs:
                 repo,
                 path: `.github/CODEOWNERS_TEMPLATES/${repoConfig.codeowners.template}`
               });
-              // Rest of the logic...
+              
+              let content = Buffer.from(template.data.content, 'base64').toString();
+              const ownerList = repoConfig.codeowners.config.REPO_OWNERS.join(' ');
+              content = content.replace('@REPO_OWNERS', ownerList);
+              
+              await github.rest.repos.createOrUpdateFileContents({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                path: '.github/CODEOWNERS',
+                message: 'Update CODEOWNERS file',
+                content: Buffer.from(content).toString('base64'),
+                committer: { name: 'GitHub Actions', email: 'actions@github.com' }
+              });
             }
             
             // Sync PR Template
@@ -48,7 +60,15 @@ jobs:
                 repo,
                 path: `.github/PULL_REQUEST_TEMPLATE/${repoConfig.pull_request.template}.md`
               });
-              // Rest of the logic...
+              
+              await github.rest.repos.createOrUpdateFileContents({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                path: '.github/pull_request_template.md',
+                message: 'Update PR template',
+                content: template.data.content,
+                committer: { name: 'GitHub Actions', email: 'actions@github.com' }
+              });
             }
 
   dispatch-workflows:
@@ -62,15 +82,44 @@ jobs:
             const templateRepo = process.env.TEMPLATE_REPOSITORY;
             const templateBranch = process.env.TEMPLATE_BRANCH;
             
-            // Rest of workflow dispatch logic...
+            const eventType = context.eventName;
+            const eventAction = context.payload.action;
             
-            jobs[workflowName] = {
-              uses: `${templateRepo}/.github/workflows/${workflowName}.yml@${templateBranch}`,
-              with: {
-                config: JSON.stringify(workflowConfig.config || {})
-              },
-              secrets: {
-                AZURE_DEVOPS_PAT: process.env.AZURE_DEVOPS_PAT,
-                AZURE_DEVOPS_ORG: process.env.AZURE_DEVOPS_ORG
+            // Initialize jobs object
+            let jobs = {};
+            
+            // If workflows object doesn't exist, treat all as disabled
+            if (!config.workflows) {
+              console.log('No workflows configured, skipping...');
+              return;
+            }
+
+            for (const [workflowName, workflowConfig] of Object.entries(config.workflows)) {
+              // If workflow config doesn't exist or enabled is not explicitly true, skip
+              if (!workflowConfig || workflowConfig.enabled !== true) {
+                console.log(`Workflow ${workflowName} not enabled, skipping...`);
+                continue;
               }
-            };
+              
+              const shouldRun = workflowConfig.triggers?.[eventType];
+              if (!shouldRun) continue;
+              
+              if (eventType === 'pull_request' && 
+                  !workflowConfig.triggers.pull_request.types.includes(eventAction)) {
+                continue;
+              }
+              
+              jobs[workflowName] = {
+                uses: `${templateRepo}/.github/workflows/${workflowName}.yml@${templateBranch}`,
+                with: {
+                  config: JSON.stringify(workflowConfig.config || {})
+                },
+                secrets: {
+                  AZURE_DEVOPS_PAT: process.env.AZURE_DEVOPS_PAT,
+                  AZURE_DEVOPS_ORG: process.env.AZURE_DEVOPS_ORG
+                }
+              };
+            }
+
+            // Return the jobs object
+            return jobs;
