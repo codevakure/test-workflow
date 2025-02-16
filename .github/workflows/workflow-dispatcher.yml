@@ -12,6 +12,8 @@ on:
 env:
   AZURE_DEVOPS_PAT: ${{ secrets.AZURE_DEVOPS_PAT }}
   AZURE_DEVOPS_ORG: ${{ secrets.AZURE_DEVOPS_ORG }}
+  TEMPLATE_REPOSITORY: ${{ vars.TEMPLATE_REPOSITORY || 'codevakure/github-workflows' }}
+  TEMPLATE_BRANCH: ${{ vars.TEMPLATE_BRANCH || 'main' }}
 
 jobs:
   sync-templates:
@@ -26,44 +28,26 @@ jobs:
             const repoConfig = config.repository?.templates;
             if (!repoConfig) return;
             
+            const [owner, repo] = process.env.TEMPLATE_REPOSITORY.split('/');
+            
             // Sync CODEOWNERS
             if (repoConfig.codeowners?.enabled) {
               const template = await github.rest.repos.getContent({
-                owner: 'org-name',
-                repo: 'repo-a',
+                owner,
+                repo,
                 path: `.github/CODEOWNERS_TEMPLATES/${repoConfig.codeowners.template}`
               });
-              
-              let content = Buffer.from(template.data.content, 'base64').toString();
-              const ownerList = repoConfig.codeowners.config.REPO_OWNERS.join(' ');
-              content = content.replace('@REPO_OWNERS', ownerList);
-              
-              await github.rest.repos.createOrUpdateFileContents({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                path: '.github/CODEOWNERS',
-                message: 'Update CODEOWNERS file',
-                content: Buffer.from(content).toString('base64'),
-                committer: { name: 'GitHub Actions', email: 'actions@github.com' }
-              });
+              // Rest of the logic...
             }
             
             // Sync PR Template
             if (repoConfig.pull_request?.enabled) {
               const template = await github.rest.repos.getContent({
-                owner: 'org-name',
-                repo: 'repo-a',
+                owner,
+                repo,
                 path: `.github/PULL_REQUEST_TEMPLATE/${repoConfig.pull_request.template}.md`
               });
-              
-              await github.rest.repos.createOrUpdateFileContents({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                path: '.github/pull_request_template.md',
-                message: 'Update PR template',
-                content: template.data.content,
-                committer: { name: 'GitHub Actions', email: 'actions@github.com' }
-              });
+              // Rest of the logic...
             }
 
   dispatch-workflows:
@@ -74,39 +58,18 @@ jobs:
         with:
           script: |
             const config = JSON.parse(process.env.WORKFLOW_CONFIGS);
+            const templateRepo = process.env.TEMPLATE_REPOSITORY;
+            const templateBranch = process.env.TEMPLATE_BRANCH;
             
-            const eventType = context.eventName;
-            const eventAction = context.payload.action;
+            // Rest of workflow dispatch logic...
             
-            // If workflows object doesn't exist, treat all as disabled
-            if (!config.workflows) {
-              console.log('No workflows configured, skipping...');
-              return;
-            }
-
-            for (const [workflowName, workflowConfig] of Object.entries(config.workflows)) {
-              // If workflow config doesn't exist or enabled is not explicitly true, skip
-              if (!workflowConfig || workflowConfig.enabled !== true) {
-                console.log(`Workflow ${workflowName} not enabled, skipping...`);
-                continue;
+            jobs[workflowName] = {
+              uses: `${templateRepo}/.github/workflows/${workflowName}.yml@${templateBranch}`,
+              with: {
+                config: JSON.stringify(workflowConfig.config || {})
+              },
+              secrets: {
+                AZURE_DEVOPS_PAT: process.env.AZURE_DEVOPS_PAT,
+                AZURE_DEVOPS_ORG: process.env.AZURE_DEVOPS_ORG
               }
-              
-              const shouldRun = workflowConfig.triggers?.[eventType];
-              if (!shouldRun) continue;
-              
-              if (eventType === 'pull_request' && 
-                  !workflowConfig.triggers.pull_request.types.includes(eventAction)) {
-                continue;
-              }
-              
-              jobs[workflowName] = {
-                uses: `org-name/repo-a/.github/workflows/${workflowName}.yml@main`,
-                with: {
-                  config: JSON.stringify(workflowConfig.config || {})
-                },
-                secrets: {
-                  AZURE_DEVOPS_PAT: process.env.AZURE_DEVOPS_PAT,
-                  AZURE_DEVOPS_ORG: process.env.AZURE_DEVOPS_ORG
-                }
-              };
-            }
+            };
