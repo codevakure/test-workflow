@@ -205,8 +205,8 @@ jobs:
         with:
           script: |
             const workItemId = '${{ steps.branch-validation.outputs.board_id }}';
-            const azureOrg = '${{ secrets.AZURE_DEVOPS_ORG }}';
-            const azurePat = '${{ secrets.AZURE_DEVOPS_PAT }}';
+            const azureOrg = process.env.AZURE_DEVOPS_ORG;
+            const azurePat = process.env.AZURE_DEVOPS_PAT;
             
             const token = Buffer.from(`:${azurePat}`).toString('base64');
             
