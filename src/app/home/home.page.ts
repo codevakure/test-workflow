@@ -9,7 +9,7 @@ import { Component } from '@angular/core';
 export class HomePage {
 
   constructor() {
-    console.log("Varun Kumar")
+    console.log("Varun Kumar");
   }
 
 }
