@@ -85,41 +85,39 @@ jobs:
             const eventType = context.eventName;
             const eventAction = context.payload.action;
             
-            // Initialize jobs object
-            let jobs = {};
-            
-            // If workflows object doesn't exist, treat all as disabled
             if (!config.workflows) {
               console.log('No workflows configured, skipping...');
               return;
             }
 
             for (const [workflowName, workflowConfig] of Object.entries(config.workflows)) {
-              // If workflow config doesn't exist or enabled is not explicitly true, skip
               if (!workflowConfig || workflowConfig.enabled !== true) {
                 console.log(`Workflow ${workflowName} not enabled, skipping...`);
                 continue;
               }
               
               const shouldRun = workflowConfig.triggers?.[eventType];
-              if (!shouldRun) continue;
-              
-              if (eventType === 'pull_request' && 
-                  !workflowConfig.triggers.pull_request.types.includes(eventAction)) {
+              if (!shouldRun) {
+                console.log(`Workflow ${workflowName} not configured for ${eventType} events`);
                 continue;
               }
               
-              jobs[workflowName] = {
-                uses: `${templateRepo}/.github/workflows/${workflowName}.yml@${templateBranch}`,
-                with: {
+              if (eventType === 'pull_request' && 
+                  !workflowConfig.triggers.pull_request.types.includes(eventAction)) {
+                console.log(`Workflow ${workflowName} not configured for PR action ${eventAction}`);
+                continue;
+              }
+              
+              console.log(`Triggering workflow ${workflowName} from ${templateRepo}`);
+              
+              // Create workflow dispatch event
+              await github.rest.actions.createWorkflowDispatch({
+                owner: templateRepo.split('/')[0],
+                repo: templateRepo.split('/')[1],
+                workflow_id: workflowName,
+                ref: templateBranch,
+                inputs: {
                   config: JSON.stringify(workflowConfig.config || {})
-                },
-                secrets: {
-                  AZURE_DEVOPS_PAT: process.env.AZURE_DEVOPS_PAT,
-                  AZURE_DEVOPS_ORG: process.env.AZURE_DEVOPS_ORG
                 }
-              };
+              });
             }
-
-            // Return the jobs object
-            return jobs;
