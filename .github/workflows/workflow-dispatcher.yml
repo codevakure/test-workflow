@@ -14,6 +14,7 @@ env:
   AZURE_DEVOPS_ORG: ${{ secrets.AZURE_DEVOPS_ORG }}
   TEMPLATE_REPOSITORY: ${{ vars.TEMPLATE_REPOSITORY || 'codevakure/github-workflows' }}
   TEMPLATE_BRANCH: ${{ vars.TEMPLATE_BRANCH || 'main' }}
+  WORKFLOW_CONFIGS: ${{ vars.WORKFLOW_CONFIGS }}
 
 jobs:
   sync-templates:
