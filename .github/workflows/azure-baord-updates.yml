@@ -91,3 +91,213 @@ jobs:
             } catch (error) {
               core.setFailed(`Error checking for duplicate branches: ${error.message}`);
             }
+
+      # Azure DevOps API Helper Functions
+      - name: Setup API Helpers
+        id: setup-helpers
+        if: steps.branch-validation.outputs.board_id != ''
+        uses: actions/github-script@v6
+        with:
+          script: |
+            async function callWithRetry(apiCall, maxRetries = 3, initialDelay = 1000) {
+              const startTime = Date.now();
+              const ABSOLUTE_TIMEOUT = 5 * 60 * 1000; // 5 minutes maximum
+              let lastError;
+              
+              for (let attempt = 0; attempt < maxRetries; attempt++) {
+                if (Date.now() - startTime > ABSOLUTE_TIMEOUT) {
+                  throw new Error('Absolute timeout exceeded (5 minutes)');
+                }
+                try {
+                  const response = await apiCall();
+                  
+                  // Check rate limits
+                  const remaining = response.headers.get('x-ratelimit-remaining');
+                  
+                  if (remaining && parseInt(remaining) < 10) {
+                    console.log(`Warning: Rate limit remaining: ${remaining}`);
+                  }
+                  
+                  if (!response.ok) {
+                    if (response.status === 429) {
+                      const retryAfter = Math.min(
+                        parseInt(response.headers.get('Retry-After') || '30'),
+                        300  // Max 5 minutes wait
+                      );
+                      
+                      if (Date.now() - startTime + (retryAfter * 1000) > ABSOLUTE_TIMEOUT) {
+                        throw new Error('Retry would exceed absolute timeout');
+                      }
+                      
+                      console.log(`Rate limited. Waiting ${retryAfter} seconds...`);
+                      await new Promise(resolve => setTimeout(resolve, retryAfter * 1000));
+                      continue;
+                    }
+                    throw new Error(`API call failed: ${response.statusText}`);
+                  }
+                  
+                  return response;
+                } catch (error) {
+                  lastError = error;
+                  if (attempt < maxRetries - 1) {
+                    const delay = initialDelay * Math.pow(2, attempt);
+                    console.log(`Attempt ${attempt + 1} failed. Retrying in ${delay}ms...`);
+                    await new Promise(resolve => setTimeout(resolve, delay));
+                  }
+                }
+              }
+              throw lastError;
+            }
+            
+            core.exportVariable('callWithRetry', callWithRetry.toString());
+
+      # Retrieve Basic PR Information
+      - name: Retrieve Basic PR Information from Github
+        id: pr-basic-info
+        if: steps.branch-validation.outputs.board_id != '' && steps.branch-validation.outputs.has_duplicates != 'true'
+        uses: actions/github-script@v6
+        with:
+          script: |
+            const prNumber = context.payload.pull_request.number;
+            
+            try {
+              const { data: pr } = await github.rest.pulls.get({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                pull_number: prNumber
+              });
+              
+              // Calculate days open
+              const daysOpen = Math.ceil(
+                (new Date() - new Date(pr.created_at)) / (1000 * 60 * 60 * 24)
+              );
+
+              const prInfo = {
+                state: pr.state,
+                author: pr.user.login,
+                url: pr.html_url,
+                totalCommits: pr.commits,
+                daysOpen,
+                lastCommitDate: pr.head.repo.pushed_at,
+                createdDate: pr.created_at
+              };
+              
+              console.log('PR Information Found:');
+              console.log('------------------------');
+              console.log(`JSON.stringify(prInfo, null, 2)`);
+              console.log(`Author: ${prInfo.author}`);
+              console.log(`URL: ${prInfo.url}`);
+              console.log(`Total Commits: ${prInfo.totalCommits}`);
+              console.log(`Days Open: ${prInfo.daysOpen}`);
+              console.log(`Last Commit: ${new Date(prInfo.lastCommitDate).toISOString().split('T')[0]}`);
+              console.log(`Created Date: ${new Date(prInfo.createdDate).toISOString().split('T')[0]}`);
+              
+              core.setOutput('pr_info', JSON.stringify(prInfo));
+              
+            } catch (error) {
+              core.setFailed(`Error retrieving PR information: ${error.message}`);
+            }
+      #Azure Work Item Information
+      - name: Retrieve Azure WorkItem Information
+        id: azure-work-info
+        if: steps.branch-validation.outputs.board_id != '' && steps.branch-validation.outputs.has_duplicates != 'true'
+        uses: actions/github-script@v6
+        with:
+          script: |
+            const workItemId = '${{ steps.branch-validation.outputs.board_id }}';
+            const azureOrg = '${{ secrets.AZURE_DEVOPS_ORG }}';
+            const azurePat = '${{ secrets.AZURE_DEVOPS_PAT }}';
+            
+            const token = Buffer.from(`:${azurePat}`).toString('base64');
+            
+            try {
+              const callWithRetry = eval('(' + process.env.callWithRetry + ')');
+
+              // Get main work item details with all fields
+              const workItemResponse = await callWithRetry(() => fetch(
+                `${azureOrg}/_apis/wit/workitems/${workItemId}?$expand=all&api-version=6.0`,
+                {
+                  headers: {
+                    'Authorization': `Basic ${token}`,
+                    'Content-Type': 'application/json'
+                  }
+                }
+              ));
+              
+              const workItem = await workItemResponse.json();
+
+              // Get related tasks (children)
+              const relationsResponse = await callWithRetry(() => fetch(
+                `${azureOrg}/_apis/wit/workitems/${workItemId}/relations?api-version=6.0`,
+                {
+                  headers: {
+                    'Authorization': `Basic ${token}`,
+                    'Content-Type': 'application/json'
+                  }
+                }
+              ));
+              
+              const relations = await relationsResponse.json();
+              
+              // Extract child task IDs
+              const childTaskIds = relations.relations
+                ?.filter(rel => rel.rel === 'System.LinkTypes.Hierarchy-Forward')
+                .map(rel => rel.url.split('/').pop()) || [];
+              
+              // Get details for each child task
+              const childTasks = [];
+              
+              for (const taskId of childTaskIds) {
+                const taskResponse = await callWithRetry(() => fetch(
+                  `${azureOrg}/_apis/wit/workitems/${taskId}?api-version=6.0`,
+                  {
+                    headers: {
+                      'Authorization': `Basic ${token}`,
+                      'Content-Type': 'application/json'
+                    }
+                  }
+                ));
+                
+                const taskDetails = await taskResponse.json();
+                childTasks.push(taskDetails);
+              }
+              
+              // Compile all information
+              const azureInfo = {
+                id: workItem.id,
+                type: workItem.fields['System.WorkItemType'],
+                title: workItem.fields['System.Title'],
+                description: workItem.fields['System.Description'],
+                state: workItem.fields['System.State'],
+                storyPoints: workItem.fields['Microsoft.VSTS.Scheduling.StoryPoints'],
+                assignedTo: workItem.fields['System.AssignedTo'],
+                createdDate: workItem.fields['System.CreatedDate'],
+                createdBy: workItem.fields['System.CreatedBy'],
+                changedDate: workItem.fields['System.ChangedDate'],
+                changedBy: workItem.fields['System.ChangedBy'],
+                iterationPath: workItem.fields['System.IterationPath'],
+                areaPath: workItem.fields['System.AreaPath'],
+                tags: workItem.fields['System.Tags'],
+                priority: workItem.fields['Microsoft.VSTS.Common.Priority'],
+                childTasks: childTasks.map(task => ({
+                  id: task.id,
+                  title: task.fields['System.Title'],
+                  state: task.fields['System.State'],
+                  assignedTo: task.fields['System.AssignedTo'],
+                  remainingWork: task.fields['Microsoft.VSTS.Scheduling.RemainingWork'],
+                  completedWork: task.fields['Microsoft.VSTS.Scheduling.CompletedWork']
+                })),
+                relations: relations.relations || [],
+                _links: workItem._links,
+                url: workItem.url
+              };
+              
+              console.log('Azure WorkItem Information:');
+              console.log('------------------------');
+              console.log(JSON.stringify(azureInfo, null, 2));
+              
+              core.setOutput('azure_info', JSON.stringify(azureInfo));
+              
+            } catch (error) {
+              core.setFailed(`Error retrieving Azure WorkItem information: ${error.message}`);
+            }
