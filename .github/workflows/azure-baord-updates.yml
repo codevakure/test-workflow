@@ -3,12 +3,6 @@ name: Azure Boards PR Integration
 on:
   pull_request:
     types: [opened, reopened, edited, closed, synchronize]
-  pull_request_review:
-    types: [submitted, edited, dismissed]
-  pull_request_review_comment:
-    types: [created, edited, deleted]
-  issue_comment:
-    types: [created, edited, deleted]
 
 env:
   AZURE_DEVOPS_PAT: ${{ secrets.AZURE_DEVOPS_PAT }}
