@@ -2,7 +2,7 @@ name: Azure Boards PR Integration
 
 on:
   pull_request:
-    types: [opened, reopened, edited, closed, synchronize]
+    types: [opened, reopened, edited, closed]
   pull_request_review:
     types: [submitted, edited, dismissed]
   pull_request_review_comment:
@@ -17,6 +17,10 @@ env:
 jobs:
   update-azure-board:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+      issues: write
     steps:
       - name: Extract Board ID and Check Duplicates
         id: branch-validation
