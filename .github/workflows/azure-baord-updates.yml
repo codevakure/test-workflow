@@ -14,7 +14,6 @@ jobs:
     permissions:
       contents: read
       pull-requests: write
-      issues: write
     steps:
       - name: Extract Board ID and Check Duplicates
         id: branch-validation
@@ -56,17 +55,31 @@ jobs:
               });
               
               if (duplicateBranches.length > 0) {
-                const branchList = duplicateBranches.map(b => `- ${b.name}`).join('\n');
-                const errorMessage = `Found existing branches for story #${boardId}:\n${branchList}`;
+                const errorMessage = `❌ **Error: Duplicate Story Branch**\n\nFound existing branches for story #${boardId}:\n${duplicateBranches.map(b => `- ${b.name}`).join('\n')}\n\nPlease close this PR and use the existing branch(es) or close the other PR(s) first.`;
                 
-                await github.rest.issues.createComment({
+                // Check for existing error comments
+                const { data: existingComments } = await github.rest.issues.listComments({
                   owner: context.repo.owner,
                   repo: context.repo.repo,
-                  issue_number: context.payload.pull_request.number,
-                  body: `❌ **Error: Duplicate Story Branch**\n\n${errorMessage}\n\nPlease close this PR and use the existing branch(es) or close the other PR(s) first.`
+                  issue_number: context.payload.pull_request.number
                 });
                 
-                core.setFailed(errorMessage);
+                const hasErrorComment = existingComments.some(comment => 
+                  comment.user.type === 'Bot' && 
+                  comment.body.includes('**Error: Duplicate Story Branch**')
+                );
+                
+                // Only post if no existing error comment found
+                if (!hasErrorComment) {
+                  await github.rest.issues.createComment({
+                    owner: context.repo.owner,
+                    repo: context.repo.repo,
+                    issue_number: context.payload.pull_request.number,
+                    body: errorMessage
+                  });
+                }
+                
+                core.setFailed('Duplicate branches found');
                 core.setOutput('has_duplicates', 'true');
                 return;
               }
