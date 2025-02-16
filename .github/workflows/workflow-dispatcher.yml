@@ -73,6 +73,8 @@ jobs:
 
   dispatch-workflows:
     runs-on: ubuntu-latest
+    permissions:
+      actions: write # Add this to ensure proper permissions
     steps:
       - name: Process Workflows
         uses: actions/github-script@v6
@@ -91,33 +93,36 @@ jobs:
             }
 
             for (const [workflowName, workflowConfig] of Object.entries(config.workflows)) {
+              // Fix the filename to match exactly what's in the repo
+              const actualWorkflowName = workflowName.replace('boards', 'baords');
+              
               if (!workflowConfig || workflowConfig.enabled !== true) {
-                console.log(`Workflow ${workflowName} not enabled, skipping...`);
+                console.log(`Workflow ${actualWorkflowName} not enabled, skipping...`);
                 continue;
               }
               
               const shouldRun = workflowConfig.triggers?.[eventType];
-              if (!shouldRun) {
-                console.log(`Workflow ${workflowName} not configured for ${eventType} events`);
-                continue;
-              }
+              if (!shouldRun) continue;
               
               if (eventType === 'pull_request' && 
                   !workflowConfig.triggers.pull_request.types.includes(eventAction)) {
-                console.log(`Workflow ${workflowName} not configured for PR action ${eventAction}`);
                 continue;
               }
               
-              console.log(`Triggering workflow ${workflowName} from ${templateRepo}`);
+              console.log(`Triggering workflow ${actualWorkflowName} from ${templateRepo}`);
               
-              // Create workflow dispatch event
-              await github.rest.actions.createWorkflowDispatch({
-                owner: templateRepo.split('/')[0],
-                repo: templateRepo.split('/')[1],
-                workflow_id: workflowName,
-                ref: templateBranch,
-                inputs: {
-                  config: JSON.stringify(workflowConfig.config || {})
-                }
-              });
+              try {
+                await github.rest.actions.createWorkflowDispatch({
+                  owner: templateRepo.split('/')[0],
+                  repo: templateRepo.split('/')[1],
+                  workflow_id: actualWorkflowName,
+                  ref: templateBranch,
+                  inputs: {
+                    config: JSON.stringify(workflowConfig.config || {})
+                  }
+                });
+              } catch (error) {
+                console.log(`Error triggering workflow: ${error.message}`);
+                throw error;
+              }
             }
