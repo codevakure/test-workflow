@@ -1,0 +1,82 @@
+name: Azure Boards PR Integration
+
+on:
+  pull_request:
+    types: [opened, reopened, edited, closed]
+  pull_request_review:
+    types: [submitted, edited, dismissed]
+  pull_request_review_comment:
+    types: [created, edited, deleted]
+  issue_comment:
+    types: [created, edited, deleted]
+
+env:
+  AZURE_DEVOPS_PAT: ${{ secrets.AZURE_DEVOPS_PAT }}
+  AZURE_DEVOPS_ORG: ${{ secrets.AZURE_DEVOPS_ORG }}
+
+jobs:
+  update-azure-board:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Extract Board ID and Check Duplicates
+        id: branch-validation
+        uses: actions/github-script@v6
+        with:
+          script: |
+            const currentBranch = context.payload.pull_request.head.ref;
+            const defaultBranchPattern = /^(main|develop|develop2|test|test\/.*|develop\/.*|^hotfix$)$/;
+            
+            // Check if default branch
+            if (defaultBranchPattern.test(currentBranch)) {
+              core.setOutput('is_default_branch', 'true');
+              core.setOutput('board_id', '');
+              return;
+            }
+            
+            // Extract board ID
+            const boardIdMatch = currentBranch.match(/(?<=#)\d+(?=-)/);
+            const boardId = boardIdMatch ? boardIdMatch[0] : '';
+            
+            if (!boardId) {
+              core.setOutput('is_default_branch', 'false');
+              core.setOutput('board_id', '');
+              return;
+            }
+            
+            // Check for duplicate branches
+            try {
+              const { data: branches } = await github.rest.repos.listBranches({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                per_page: 100
+              });
+              
+              const duplicateBranches = branches.filter(branch => {
+                if (branch.name === currentBranch) return false;
+                const storyMatch = branch.name.match(/(?<=#)\d+(?=-)/);
+                return storyMatch && storyMatch[0] === boardId;
+              });
+              
+              if (duplicateBranches.length > 0) {
+                const branchList = duplicateBranches.map(b => `- ${b.name}`).join('\n');
+                const errorMessage = `Found existing branches for story #${boardId}:\n${branchList}`;
+                
+                await github.rest.issues.createComment({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: context.payload.pull_request.number,
+                  body: `❌ **Error: Duplicate Story Branch**\n\n${errorMessage}\n\nPlease close this PR and use the existing branch(es) or close the other PR(s) first.`
+                });
+                
+                core.setFailed(errorMessage);
+                core.setOutput('has_duplicates', 'true');
+                return;
+              }
+              
+              core.setOutput('is_default_branch', 'false');
+              core.setOutput('board_id', boardId);
+              core.setOutput('has_duplicates', 'false');
+              
+            } catch (error) {
+              core.setFailed(`Error checking for duplicate branches: ${error.message}`);
+            }
