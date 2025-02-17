@@ -1,0 +1,293 @@
+name: Ionic/Angular PR Review v12
+
+on:
+  pull_request:
+    types: [opened, synchronize]
+    paths:
+      - '**.ts'
+      - '**.html'
+      - '**.scss'
+      - '**.css'
+      - '**.js'
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  code-review:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+          cache: 'npm'
+
+      - name: Install Dependencies
+        run: npm install
+
+      - name: Code Quality Review
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            
+            // Get PR information
+            const { data: pr } = await github.rest.pulls.get({
+              ...context.repo,
+              pull_number: context.issue.number,
+            });
+            const latestCommitSha = pr.head.sha;
+            
+            // Get all review comments
+            const { data: comments } = await github.rest.pulls.listReviewComments({
+              ...context.repo,
+              pull_number: context.issue.number,
+            });
+
+            // Create a Set of existing comments
+            const existingComments = new Set(
+              comments.map(comment => `${comment.path}:${comment.line}:${comment.body}`)
+            );
+
+            // Get changed files
+            const { data: files } = await github.rest.pulls.listFiles({
+              ...context.repo,
+              pull_number: context.issue.number,
+            });
+
+            async function createComment(file, line, priority, category, message) {
+              const priorityEmoji = {
+                critical: '🚨 CRITICAL: ',
+                recommended: '💡 RECOMMENDED: ',
+                optional: '💭 OPTIONAL: '
+              };
+              
+              const commentBody = `${priorityEmoji[priority]}**${category}**\n\n${message}`;
+              const commentKey = `${file.filename}:${line}:${commentBody}`;
+              
+              if (!existingComments.has(commentKey)) {
+                await github.rest.pulls.createReviewComment({
+                  ...context.repo,
+                  pull_number: context.issue.number,
+                  commit_id: latestCommitSha,
+                  path: file.filename,
+                  body: commentBody,
+                  line: line
+                });
+              }
+            }
+
+            async function checkHtmlFile(file, content, lines) {
+              // Check for string literals in directives
+              const stringLiteralsMap = new Map();
+
+              // Collect string literals used in directives
+              lines.forEach((line, index) => {
+                // Skip comments
+                if (line.trim().startsWith('<!--')) return;
+
+                // Check only for conditional directives
+                const isDirectiveLine = 
+                  line.includes('*ngIf') || 
+                  line.includes('*ngFor') || 
+                  line.includes('[ngSwitch]') || 
+                  line.includes('*ngSwitchCase');
+
+                if (isDirectiveLine) {
+                  const stringMatches = line.match(/['"`]([^'"`]+)['"`]/g);
+                  if (stringMatches) {
+                    stringMatches.forEach(match => {
+                      const value = match.replace(/['"`]/g, '');
+                      // Ignore if value is not a string literal
+                      if (value && !value.includes('{{') && !value.includes('${')) {
+                        if (!stringLiteralsMap.has(value)) {
+                          stringLiteralsMap.set(value, []);
+                        }
+                        stringLiteralsMap.get(value).push(index + 1);
+                      }
+                    });
+                  }
+                }
+              });
+
+              // Check for repeated string literals
+              for (const [literal, lineNumbers] of stringLiteralsMap.entries()) {
+                if (lineNumbers.length >= 2) {
+                  const enumName = literal.includes('-') ? 
+                    literal.split('-')[0].toUpperCase() : 
+                    literal.toUpperCase();
+
+                  await createComment(
+                    file,
+                    lineNumbers[0],
+                    'recommended',
+                    'String Literal Optimization',
+                    `String literal '${literal}' is used ${lineNumbers.length} times in Angular directives.\n\n` +
+                    `To improve type safety and maintainability, create an enum:\n\n` +
+                    `\`\`\`typescript\nenum ${enumName}Status {\n` +
+                    `  ${literal.toUpperCase().replace(/-/g, '_')} = '${literal}',\n` +
+                    `  // Add other related status values here\n` +
+                    `}\n\`\`\`\n\n` +
+                    `Then update the template to use:\n` +
+                    `\`\`\`html\n*ngIf="variable === ${enumName}Status.${literal.toUpperCase().replace(/-/g, '_')}"\n\`\`\`\n\n` +
+                    `Found on lines: ${lineNumbers.join(', ')}`
+                  );
+                }
+              }
+
+              // Your existing HTML checks continue here...
+              // Check performance issues in templates
+              const ngForLines = lines
+                .map((line, index) => ({ line, index: index + 1 }))
+                .filter(({ line }) => {
+                  const hasNgFor = line.includes('*ngFor');
+                  const hasTrackBy = line.includes('trackBy');
+                  const hasComplexBinding = (line.match(/{{.*}}/g) || []).length > 1;
+                  return hasNgFor && !hasTrackBy && hasComplexBinding;
+                });
+
+              for (const { index } of ngForLines) {
+                await createComment(file, index, 'recommended', 'Performance',
+                  'Add trackBy function to improve rendering performance with complex *ngFor.'
+                );
+              }
+
+              // Continue with rest of your existing HTML checks...
+            }
+
+            // Process files
+            for (const file of files) {
+              try {
+                if (file.status === 'removed') continue;
+                
+                const content = await fs.promises.readFile(file.filename, 'utf8');
+                const lines = content.split('\n');
+                const extension = file.filename.split('.').pop().toLowerCase();
+
+                switch (extension) {
+                  case 'html':
+                    await checkHtmlFile(file, content, lines);
+                    break;
+                  // Other file type checks...
+                }
+              } catch (error) {
+                console.error(`Error processing file ${file.filename}:`, error);
+              }
+            }
+            
+               
+      - name: Verify Changes and Auto-resolve Comments
+        if: github.event.action == 'synchronize' || github.event.action == 'opened'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            try {
+              console.log('Starting verification and cleanup of comments...');
+              
+              const { data: comments } = await github.rest.pulls.listReviewComments({
+                ...context.repo,
+                pull_number: context.issue.number
+              });
+
+              const resolvedCommentIds = new Set();
+              const deletedCommentIds = new Set();
+
+              function isCommentResolved(comment) {
+                const bodyLower = comment.body.toLowerCase();
+                
+                console.log(`Checking comment in ${comment.path}:${comment.line}`);
+                console.log('Comment body:', bodyLower);
+                
+                const resolutionIndicators = [
+                  'resolved',
+                  'fixed',
+                  '✅',
+                  'completed',
+                  'done',
+                  'show resolved',
+                  'has been resolved',
+                  'resolve conversation',
+                  'marked as resolved'
+                ];
+
+                if (comment.position === null) {
+                  console.log('Comment is outdated/resolved due to position being null');
+                  return true;
+                }
+
+                for (const indicator of resolutionIndicators) {
+                  if (bodyLower.includes(indicator)) {
+                    console.log(`Found resolution indicator: ${indicator}`);
+                    return true;
+                  }
+                }
+
+                const conversation = [
+                  comment,
+                  ...comments.filter(reply => reply.in_reply_to === comment.id)
+                ];
+
+                return conversation.some(c => {
+                  const replyLower = c.body.toLowerCase();
+                  return resolutionIndicators.some(indicator => {
+                    const found = replyLower.includes(indicator);
+                    if (found) {
+                      console.log(`Found resolution indicator in reply: ${indicator}`);
+                    }
+                    return found;
+                  });
+                });
+              }
+
+              for (const comment of comments) {
+                if (comment.user.login !== 'github-actions[bot]') continue;
+
+                if (isCommentResolved(comment)) {
+                  resolvedCommentIds.add(comment.id);
+                  
+                  if (!deletedCommentIds.has(comment.id)) {
+                    try {
+                      await github.rest.pulls.deleteReviewComment({
+                        ...context.repo,
+                        comment_id: comment.id
+                      });
+                      deletedCommentIds.add(comment.id);
+                      console.log(`Deleted resolved comment: ${comment.path}:${comment.line}`);
+                    } catch (error) {
+                      console.warn(`Failed to delete comment ${comment.id}:`, error.message);
+                    }
+                  }
+                }
+              }
+
+              const { data: remainingComments } = await github.rest.pulls.listReviewComments({
+                ...context.repo,
+                pull_number: context.issue.number
+              });
+
+              const criticalIssues = remainingComments.filter(comment => 
+                comment.user.login === 'github-actions[bot]' &&
+                comment.body.includes('🚨 CRITICAL') &&
+                !resolvedCommentIds.has(comment.id) &&
+                !deletedCommentIds.has(comment.id)
+              );
+
+              if (criticalIssues.length > 0) {
+                core.info('Found remaining critical issues:');
+                criticalIssues.forEach(issue => {
+                  core.info(`- ${issue.path}:${issue.line} - ${issue.body.split('\n')[0]}`);
+                });
+                core.setFailed(`${criticalIssues.length} critical issues must be resolved before merging.`);
+              } else {
+                core.info('All critical issues have been resolved.');
+              }
+            } catch (error) {
+              console.error('Full error:', error);
+              core.setFailed(`Error in verification step: ${error.message}`);
+            }

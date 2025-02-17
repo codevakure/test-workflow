@@ -1,0 +1,96 @@
+# .github/workflows/azure-comment-manager.yml
+name: Setup Azure Comment Manager
+
+on:
+  workflow_call:
+
+jobs:
+  setup-azure-comment:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Setup Azure Comment Manager
+        uses: actions/github-script@v6
+        with:
+          script: |
+            const handleAzureComment = async ({ title, body, work_item_id }) => {
+              try {
+                // Validate inputs
+                if (!process.env.AZURE_DEVOPS_ORG) {
+                  throw new Error('Azure DevOps organization URL is not set');
+                }
+                if (!process.env.AZURE_DEVOPS_PAT) {
+                  throw new Error('Azure DevOps PAT is not set');
+                }
+                if (!work_item_id) {
+                  throw new Error('Work item ID is required');
+                }
+
+                // Clean and construct base URL
+                const baseUrl = process.env.AZURE_DEVOPS_ORG.endsWith('/') 
+                  ? process.env.AZURE_DEVOPS_ORG.slice(0, -1) 
+                  : process.env.AZURE_DEVOPS_ORG;
+
+                const authHeader = `Basic ${Buffer.from(':' + process.env.AZURE_DEVOPS_PAT).toString('base64')}`;
+                const callWithRetry = eval('(' + process.env.callWithRetry + ')');
+
+                // First get the work item to check its history
+                const workItemUrl = `${baseUrl}/_apis/wit/workitems/${work_item_id}?$expand=all&api-version=6.0`;
+                console.log(`Fetching work item: ${workItemUrl}`);
+
+                const workItemResponse = await callWithRetry(async () => {
+                  const response = await fetch(workItemUrl, {
+                    method: 'GET',
+                    headers: {
+                      'Authorization': authHeader,
+                      'Accept': 'application/json'
+                    }
+                  });
+
+                  if (!response.ok) {
+                    throw new Error(`Failed to fetch work item: ${response.status} ${response.statusText}`);
+                  }
+
+                  return response.json();
+                });
+
+                // Get existing comments
+                const history = workItemResponse.fields['System.History'] || '';
+                const hasExistingComment = history.includes(title);
+
+                // Prepare the comment update
+                const commentBody = `${title}\n\n${body}`;
+
+                // Update or create comment
+                const patchUrl = `${baseUrl}/_apis/wit/workitems/${work_item_id}?api-version=6.0`;
+                
+                await callWithRetry(async () => {
+                  const response = await fetch(patchUrl, {
+                    method: 'PATCH',
+                    headers: {
+                      'Authorization': authHeader,
+                      'Content-Type': 'application/json-patch+json'
+                    },
+                    body: JSON.stringify([
+                      {
+                        "op": hasExistingComment ? "replace" : "add",
+                        "path": "/fields/System.History",
+                        "value": commentBody
+                      }
+                    ])
+                  });
+
+                  if (!response.ok) {
+                    throw new Error(`Failed to ${hasExistingComment ? 'update' : 'add'} comment: ${response.status} ${response.statusText}`);
+                  }
+                });
+
+                console.log(`Successfully ${hasExistingComment ? 'updated' : 'added'} comment to work item ${work_item_id}`);
+                return true;
+
+              } catch (error) {
+                console.error('Error handling Azure comment:', error);
+                return false;
+              }
+            };
+
+            core.exportVariable('HANDLE_AZURE_COMMENT', handleAzureComment.toString());

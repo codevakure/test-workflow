@@ -1,0 +1,168 @@
+# .github/workflows/azure-boards-pr.yml
+name: Azure Boards PR Integration
+
+on:
+  pull_request:
+    types: [opened, reopened, edited, closed, synchronize]
+
+jobs:
+  setup-utilities:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Call Retry Setup
+        uses: ./.github/workflows/retry-setup.yml
+
+      - name: Call GitHub Comment Manager
+        uses: ./.github/workflows/github-comment-manager.yml
+
+      - name: Call Azure Comment Manager
+        uses: ./.github/workflows/azure-comment-manager.yml
+        
+      # Extract Board ID and Check Duplicates
+      - name: Extract Board ID and Check Duplicates
+        id: branch-validation
+        uses: actions/github-script@v6
+        with:
+          script: |
+            const currentBranch = context.payload.pull_request.head.ref.toLowerCase();
+            const defaultBranchPattern = /^(main|develop|develop2|test|test\/.*|develop\/.*|^hotfix$)$/i;
+            const validBranchPattern = /^(feature\/|bugfix\/|us-|hotfix\/)?ab#\d+-[\w-]+$/i;
+            
+            console.log('Validating branch:', currentBranch);
+            
+            try {
+              // Check if it's a default branch
+              if (defaultBranchPattern.test(currentBranch)) {
+                console.log('Default branch detected, skipping validation');
+                core.setOutput('is_default_branch', 'true');
+                core.setOutput('board_id', '');
+                core.setOutput('is_valid_branch', 'true');
+                core.setOutput('has_duplicates', 'false');
+                return;
+              }
+
+              // Validate branch name format
+              if (!validBranchPattern.test(currentBranch)) {
+                const handleGitHubComment = eval('(' + process.env.HANDLE_GITHUB_COMMENT + ')');
+                await handleGitHubComment({
+                  title: "**❌ Invalid Branch Name**",
+                  body: `Branch name must follow the format:
+
+                    - feature/ab#123-description
+                    - bugfix/ab#456-fix
+                    - us-ab#789-feature
+
+                    Your branch name: ${currentBranch}
+
+                    Please rename your branch to follow the required format`,
+                  isError: true
+                });
+
+                core.setFailed('Invalid branch name format');
+                core.setOutput('is_valid_branch', 'false');
+                core.setOutput('is_default_branch', 'false');
+                core.setOutput('board_id', '');
+                core.setOutput('has_duplicates', 'false');
+                return;
+              }
+
+              // Extract board ID
+              const boardIdMatch = currentBranch.match(/(?<=#)\d+(?=-)/);
+              const boardId = boardIdMatch ? boardIdMatch[0] : '';
+
+              if (!boardId) {
+                const handleGitHubComment = eval('(' + process.env.HANDLE_GITHUB_COMMENT + ')');
+                await handleGitHubComment({
+                  title: "**❌ Missing Board ID**",
+                  body: `Could not extract board ID from branch name.
+                    
+                    Please ensure your branch name contains a valid board ID (e.g., ab#123)`,
+                  isError: true
+                });
+
+                core.setFailed('Missing board ID');
+                core.setOutput('is_valid_branch', 'false');
+                core.setOutput('is_default_branch', 'false');
+                core.setOutput('board_id', '');
+                core.setOutput('has_duplicates', 'false');
+                return;
+              }
+
+              // Check for duplicate branches
+              const { data: matchingRefs } = await github.rest.git.listMatchingRefs({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                ref: 'heads/'
+              });
+
+              const duplicateBranches = matchingRefs
+                .map(ref => ref.ref.replace('refs/heads/', ''))
+                .filter(branchName => {
+                  if (branchName.toLowerCase() === currentBranch) return false;
+                  const branchBoardId = branchName.toLowerCase().match(/(?<=#)\d+(?=-)/);
+                  return branchBoardId && branchBoardId[0] === boardId;
+                });
+
+              console.log('Found matching branches:', duplicateBranches);
+
+              if (duplicateBranches.length > 0) {
+                const handleGitHubComment = eval('(' + process.env.HANDLE_GITHUB_COMMENT + ')');
+                await handleGitHubComment({
+                  title: "**❌ Duplicate Story Branch**",
+                  body: `Found existing branches for story #${boardId}:
+                    ${duplicateBranches.map(b => `- ${b}`).join('\n                    ')}
+
+                    Please take one of these actions:
+
+                    1. To add new functionality to the existing branch:
+                       - Close this PR
+                       - Git checkout ${duplicateBranches[0]}
+                       - Git pull origin ${duplicateBranches[0]}
+                       - Add your new changes on top
+                       - Push your changes
+                       - This keeps all related work in one PR
+
+                    2. If the existing branch work is complete:
+                       - First close/merge the existing PR
+                       - Then you can create a new PR for additional functionality
+
+                    This helps maintain clean Git history and keeps related changes together.`,
+                  isError: true
+                });
+
+                core.setFailed('Duplicate branches found');
+                core.setOutput('has_duplicates', 'true');
+                core.setOutput('is_valid_branch', 'true');
+                core.setOutput('is_default_branch', 'false');
+                core.setOutput('board_id', boardId);
+                return;
+              }
+
+              // All validations passed
+              console.log('Branch validation successful');
+              console.log('Board ID:', boardId);
+              
+              core.setOutput('is_default_branch', 'false');
+              core.setOutput('board_id', boardId);
+              core.setOutput('has_duplicates', 'false');
+              core.setOutput('is_valid_branch', 'true');
+
+            } catch (error) {
+              console.error('Branch validation error:', error);
+              
+              const handleGitHubComment = eval('(' + process.env.HANDLE_GITHUB_COMMENT + ')');
+              await handleGitHubComment({
+                title: "**❌ Branch Validation Error**",
+                body: `An error occurred during branch validation:
+                    ${error.message}
+
+                    Please contact your administrator if the issue persists.`,
+                isError: true
+              });
+              
+              core.setOutput('is_valid_branch', 'false');
+              core.setOutput('is_default_branch', 'false');
+              core.setOutput('board_id', '');
+              core.setOutput('has_duplicates', 'false');
+              core.setFailed(`Branch validation error: ${error.message}`);
+            }
