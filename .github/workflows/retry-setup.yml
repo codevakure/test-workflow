@@ -1,0 +1,36 @@
+# .github/workflows/retry-setup.yml
+name: Setup Retry Function
+
+on:
+  workflow_call:
+
+jobs:
+  setup-retry:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Setup Retry Function
+        uses: actions/github-script@v6
+        with:
+          script: |
+            const callWithRetry = async (fn, maxRetries = 3, delay = 1000) => {
+              let lastError;
+              
+              for (let i = 0; i < maxRetries; i++) {
+                try {
+                  return await fn();
+                } catch (error) {
+                  lastError = error;
+                  console.log(`Attempt ${i + 1} failed: ${error.message}`);
+                  
+                  if (i < maxRetries - 1) {
+                    const waitTime = delay * Math.pow(2, i); // Exponential backoff
+                    console.log(`Waiting ${waitTime}ms before retry...`);
+                    await new Promise(resolve => setTimeout(resolve, waitTime));
+                  }
+                }
+              }
+              
+              throw lastError;
+            };
+
+            core.exportVariable('callWithRetry', callWithRetry.toString());

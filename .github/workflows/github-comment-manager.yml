@@ -1,0 +1,74 @@
+# .github/workflows/github-comment-manager.yml
+name: Setup GitHub Comment Manager
+
+on:
+  workflow_call:
+
+jobs:
+  setup-github-comment:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Setup GitHub Comment Manager
+        uses: actions/github-script@v6
+        with:
+          script: |
+            const handleGitHubComment = async ({ title, body, isError = true }) => {
+              try {
+                // Get existing comments
+                const { data: existingComments } = await github.rest.issues.listComments({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: context.payload.pull_request.number
+                });
+
+                // Find existing comment with same title
+                const existingComment = existingComments.find(comment => {
+                  const commentTitle = comment.body.split('\n')[0].replace(/\*/g, '').trim();
+                  return comment.user.type === 'Bot' && commentTitle === title.replace(/\*/g, '').trim();
+                });
+
+                if (isError) {
+                  // For error messages: Update if exists, create if doesn't
+                  if (existingComment) {
+                    await github.rest.issues.updateComment({
+                      owner: context.repo.owner,
+                      repo: context.repo.repo,
+                      comment_id: existingComment.id,
+                      body: body
+                    });
+                  } else {
+                    await github.rest.issues.createComment({
+                      owner: context.repo.owner,
+                      repo: context.repo.repo,
+                      issue_number: context.payload.pull_request.number,
+                      body: body
+                    });
+                  }
+                } else {
+                  // For success messages: Delete error if exists, then create success message
+                  if (existingComment) {
+                    await github.rest.issues.deleteComment({
+                      owner: context.repo.owner,
+                      repo: context.repo.repo,
+                      comment_id: existingComment.id
+                    });
+                  }
+                  // Only create success comment if body is provided
+                  if (body) {
+                    await github.rest.issues.createComment({
+                      owner: context.repo.owner,
+                      repo: context.repo.repo,
+                      issue_number: context.payload.pull_request.number,
+                      body: body
+                    });
+                  }
+                }
+
+                return true;
+              } catch (error) {
+                console.error('Error handling GitHub comment:', error);
+                return false;
+              }
+            };
+
+            core.exportVariable('HANDLE_GITHUB_COMMENT', handleGitHubComment.toString());
