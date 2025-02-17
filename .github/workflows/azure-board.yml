@@ -9,9 +9,9 @@ jobs:
   setup-utilities:
     runs-on: ubuntu-latest
     steps:
-      - uses: ./.github/workflows/retry-setup.yml
-      - uses: ./.github/workflows/github-comment-manager.yml
-      - uses: ./.github/workflows/azure-comment-manager.yml
+      - uses: .github/workflows/retry-setup.yml
+      - uses: .github/workflows/github-comment-manager.yml
+      - uses: .github/workflows/azure-comment-manager.yml
 
   validate-branch:
     needs: setup-utilities
