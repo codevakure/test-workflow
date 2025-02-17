@@ -9,14 +9,15 @@ jobs:
   setup-utilities:
     runs-on: ubuntu-latest
     steps:
-      - uses: ./.github/workflows/retry-setup.yml
-      - uses: ./.github/workflows/github-comment-manager.yml
-      - uses: ./.github/workflows/azure-comment-manager.yml
+      - name: Call Retry Setup
+        uses: ./.github/workflows/retry-setup.yml
 
-  validate-branch:
-    needs: setup-utilities
-    runs-on: ubuntu-latest
-    steps:
+      - name: Call GitHub Comment Manager
+        uses: ./.github/workflows/github-comment-manager.yml
+
+      - name: Call Azure Comment Manager
+        uses: ./.github/workflows/azure-comment-manager.yml
+        
       # Extract Board ID and Check Duplicates
       - name: Extract Board ID and Check Duplicates
         id: branch-validation
