@@ -91,7 +91,6 @@ jobs:
                   fi
 
             - name: Manage PR Comments
-              if: env.BUILD_STATUS == 'failed'
               uses: actions/github-script@v6
               with:
                   github-token: ${{ github.token }}
@@ -106,6 +105,7 @@ jobs:
                     // Delete existing build check comments
                     for (const comment of comments) {
                       if ((comment.body.includes('Build Failed') ||
+                           comment.body.includes('Build Passed') ||
                            comment.body.includes('Build Error Details')) &&
                           comment.user.login === 'github-actions[bot]') {
                         try {
@@ -120,29 +120,36 @@ jobs:
                       }
                     }
                     
-                    // Prepare and post new comment
-                    const errorMsg = process.env.ERROR_MSG || 'Error details not available';
                     const buildEnv = process.env.BUILD_ENV || 'Unknown';
                     
-                    let message = "";
-                    message += "**❌ Build Failed**\n\n";
-                    message += `The build process for the **${buildEnv}** environment has failed.\n\n`;
-                    message += "**Build Error Details:**\n";
-                    message += "```\n";
-                    message += `${errorMsg}\n`;
-                    message += "```\n\n";
-                    message += "**Next Steps:**\n";
-                    message += "1. Review the error message above\n";
-                    message += "2. Check the complete build logs in the pipeline for more details\n";
-                    message += "3. Try to reproduce and fix the build error locally\n";
-                    message += "4. Push your changes to trigger a new build\n\n";
-                    message += "If you need help interpreting these errors, please reach out to the team.";
-                    
-                    await github.rest.issues.createComment({
-                      issue_number: context.issue.number,
-                      owner: context.repo.owner,
-                      repo: context.repo.repo,
-                      body: message
-                    });
-                    
-                    throw new Error('Build failed');
+                    // Only post a new comment if build failed
+                    if (process.env.BUILD_STATUS === 'failed') {
+                      const errorMsg = process.env.ERROR_MSG || 'Error details not available';
+                      
+                      let message = "";
+                      message += "**❌ Build Failed**\n\n";
+                      message += `The build process for the **${buildEnv}** environment has failed.\n\n`;
+                      message += "**Build Error Details:**\n";
+                      message += "```\n";
+                      message += `${errorMsg}\n`;
+                      message += "```\n\n";
+                      message += "**Next Steps:**\n";
+                      message += "1. Review the error message above\n";
+                      message += "2. Check the complete build logs in the pipeline for more details\n";
+                      message += "3. Try to reproduce and fix the build error locally\n";
+                      message += "4. Push your changes to trigger a new build\n\n";
+                      message += "If you need help interpreting these errors, please reach out to the team.";
+                      
+                      await github.rest.issues.createComment({
+                        issue_number: context.issue.number,
+                        owner: context.repo.owner,
+                        repo: context.repo.repo,
+                        body: message
+                      });
+                    }
+
+            - name: Check build status
+              if: env.BUILD_STATUS == 'failed'
+              run: |
+                  echo "::error::Build failed. See PR comments for details."
+                  exit 1
