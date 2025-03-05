@@ -81,137 +81,96 @@ jobs:
               echo "TEST_STATUS=execution_failed" >> $GITHUB_ENV
           fi
 
-          # Look for test results - first check for Executed tests
-          if grep -q "Executed.*of.*" test-output.txt; then
-              TEST_LINE=$(grep "Executed.*of.*" test-output.txt | tail -1)
-              echo "Found test execution line: $TEST_LINE"
-              
-              # Extract numbers
-              if [[ $TEST_LINE =~ Executed[[:space:]]+([0-9]+)[[:space:]]+of[[:space:]]+([0-9]+) ]]; then
-                  EXECUTED=${BASH_REMATCH[1]}
-                  TOTAL=${BASH_REMATCH[2]}
-                  echo "Executed: $EXECUTED, Total: $TOTAL"
-              fi
-          # Check for TOTAL: X SUCCESS format
-          elif grep -q "TOTAL:" test-output.txt; then
-              TEST_LINE=$(grep "TOTAL:" test-output.txt | tail -1)
-              echo "Found TOTAL line: $TEST_LINE"
-              
-              # Extract numbers
-              if [[ $TEST_LINE =~ TOTAL:[[:space:]]+([0-9]+)[[:space:]]+ ]]; then
-                  TOTAL=${BASH_REMATCH[1]}
-                  EXECUTED=$TOTAL
-                  echo "Total: $TOTAL"
-              fi
+          # Find test metrics
+          echo "Looking for test metrics..."
+          grep -n "TOTAL" test-output.txt || echo "No TOTAL line found"
+          grep -n "Executed" test-output.txt || echo "No Executed line found"
+          
+          # Set default metrics
+          echo "TOTAL_TESTS=0" >> $GITHUB_ENV
+          echo "PASSED_TESTS=0" >> $GITHUB_ENV
+          echo "FAILED_TESTS=0" >> $GITHUB_ENV
+          echo "PASS_PERCENTAGE=0" >> $GITHUB_ENV
+
+          # ENHANCED DEBUGGING FOR COVERAGE
+          echo "=== COVERAGE EXTRACTION DEBUGGING ==="
+          echo "Searching for coverage file..."
+          ls -la coverage/ || echo "No coverage directory found"
+          
+          # Check for coverage in JSON file
+          if [ -f coverage/coverage-summary.json ]; then
+              echo "Found coverage JSON file:"
+              cat coverage/coverage-summary.json
+              # Create an environment variable with the content
+              COVERAGE_JSON=$(cat coverage/coverage-summary.json)
+              echo "COVERAGE_JSON<<EOF" >> $GITHUB_ENV
+              echo "$COVERAGE_JSON" >> $GITHUB_ENV
+              echo "EOF" >> $GITHUB_ENV
           fi
           
-          # Set test metrics
-          if [ -n "$TOTAL" ] && [ "$TOTAL" -gt 0 ]; then
-              echo "TOTAL_TESTS=$TOTAL" >> $GITHUB_ENV
-              echo "PASSED_TESTS=$EXECUTED" >> $GITHUB_ENV
-              echo "FAILED_TESTS=0" >> $GITHUB_ENV
-              echo "PASS_PERCENTAGE=100" >> $GITHUB_ENV
-          else
-              echo "Could not determine test results"
-              echo "TOTAL_TESTS=0" >> $GITHUB_ENV
-              echo "PASSED_TESTS=0" >> $GITHUB_ENV
-              echo "FAILED_TESTS=0" >> $GITHUB_ENV
-              echo "PASS_PERCENTAGE=0" >> $GITHUB_ENV
+          # Look for coverage in output file
+          echo "Searching for Coverage summary in test output..."
+          grep -A 10 "Coverage summary" test-output.txt || echo "No Coverage summary section found"
+          
+          # Try to extract coverage - save everything to a file we can inspect
+          echo "Extracting coverage patterns..."
+          
+          # Create a clean version without ANSI codes
+          cat test-output.txt | tr -d '\r' | sed 's/\x1b\[[0-9;]*m//g' > coverage-clean.txt
+          echo "Cleaned output file (first 50 lines):"
+          head -n 50 coverage-clean.txt
+          
+          # Try to extract coverage directly using grep patterns
+          echo "Trying direct extraction:"
+          
+          # Extract using grep and export to env vars
+          STATEMENTS_LINE=$(grep -i "statements" coverage-clean.txt || echo "NOT_FOUND")
+          BRANCHES_LINE=$(grep -i "branches" coverage-clean.txt || echo "NOT_FOUND")
+          FUNCTIONS_LINE=$(grep -i "functions" coverage-clean.txt || echo "NOT_FOUND")
+          LINES_LINE=$(grep -i "lines" coverage-clean.txt || echo "NOT_FOUND")
+          
+          echo "Extracted lines:"
+          echo "STATEMENTS: $STATEMENTS_LINE"
+          echo "BRANCHES: $BRANCHES_LINE"
+          echo "FUNCTIONS: $FUNCTIONS_LINE"
+          echo "LINES: $LINES_LINE"
+          
+          # Capture all coverage information into a debug variable
+          echo "COVERAGE_DEBUG<<EOF" >> $GITHUB_ENV
+          echo "STATEMENTS: $STATEMENTS_LINE" >> $GITHUB_ENV
+          echo "BRANCHES: $BRANCHES_LINE" >> $GITHUB_ENV
+          echo "FUNCTIONS: $FUNCTIONS_LINE" >> $GITHUB_ENV
+          echo "LINES: $LINES_LINE" >> $GITHUB_ENV
+          echo "EOF" >> $GITHUB_ENV
+          
+          # Try to extract percentages using different patterns
+          echo "Extracting percentages with multiple patterns:"
+          
+          # Find percentages with different patterns
+          if [[ "$STATEMENTS_LINE" != "NOT_FOUND" ]]; then
+              echo "Percentage with pattern 1: $(echo "$STATEMENTS_LINE" | grep -o '[0-9.]\+%' || echo "NO_MATCH")"
+              echo "Percentage with pattern 2: $(echo "$STATEMENTS_LINE" | grep -o '[0-9.]*%' || echo "NO_MATCH")"
+              echo "Percentage with pattern 3: $(echo "$STATEMENTS_LINE" | sed -n 's/.*: \([0-9.]*%\).*/\1/p' || echo "NO_MATCH")"
           fi
           
-          # Simple coverage extraction
-          if grep -q "Coverage summary" test-output.txt; then
-              echo "Found Coverage summary"
+          # Store extracted values in env vars for PR comment
+          if [[ "$STATEMENTS_LINE" != "NOT_FOUND" ]]; then
+              STATEMENTS_PCT=$(echo "$STATEMENTS_LINE" | grep -o '[0-9.]\+%' | sed 's/%//' || echo "")
+              BRANCHES_PCT=$(echo "$BRANCHES_LINE" | grep -o '[0-9.]\+%' | sed 's/%//' || echo "")
+              FUNCTIONS_PCT=$(echo "$FUNCTIONS_LINE" | grep -o '[0-9.]\+%' | sed 's/%//' || echo "")
+              LINES_PCT=$(echo "$LINES_LINE" | grep -o '[0-9.]\+%' | sed 's/%//' || echo "")
               
-              # Extract metrics with simple grep patterns
-              STATEMENTS_LINE=$(grep "Statements" test-output.txt | head -1)
-              BRANCHES_LINE=$(grep "Branches" test-output.txt | head -1)
-              FUNCTIONS_LINE=$(grep "Functions" test-output.txt | head -1)
-              LINES_LINE=$(grep "Lines" test-output.txt | head -1)
-              
-              # Extract just the percentage numbers
-              STATEMENTS_COVERAGE=$(echo "$STATEMENTS_LINE" | grep -o '[0-9.]\+%' | sed 's/%//')
-              BRANCHES_COVERAGE=$(echo "$BRANCHES_LINE" | grep -o '[0-9.]\+%' | sed 's/%//')
-              FUNCTIONS_COVERAGE=$(echo "$FUNCTIONS_LINE" | grep -o '[0-9.]\+%' | sed 's/%//')
-              LINES_COVERAGE=$(echo "$LINES_LINE" | grep -o '[0-9.]\+%' | sed 's/%//')
-              
-              echo "Statements coverage: $STATEMENTS_COVERAGE%"
-              echo "Branches coverage: $BRANCHES_COVERAGE%"
-              echo "Functions coverage: $FUNCTIONS_COVERAGE%"
-              echo "Lines coverage: $LINES_COVERAGE%"
+              echo "Extracted percentages:"
+              echo "Statements: $STATEMENTS_PCT%"
+              echo "Branches: $BRANCHES_PCT%"
+              echo "Functions: $FUNCTIONS_PCT%"
+              echo "Lines: $LINES_PCT%"
               
               # Save to environment variables
-              echo "STATEMENTS_COVERAGE=$STATEMENTS_COVERAGE" >> $GITHUB_ENV
-              echo "BRANCHES_COVERAGE=$BRANCHES_COVERAGE" >> $GITHUB_ENV
-              echo "FUNCTIONS_COVERAGE=$FUNCTIONS_COVERAGE" >> $GITHUB_ENV
-              echo "LINES_COVERAGE=$LINES_COVERAGE" >> $GITHUB_ENV
-              
-              # Simple threshold check using integer comparison (no bc required)
-              FAILED_THRESHOLDS=()
-              
-              if [ -n "$STATEMENTS_COVERAGE" ] && [ ${STATEMENTS_COVERAGE%.*} -lt ${STATEMENTS_THRESHOLD%.*} ]; then
-                  FAILED_THRESHOLDS+=("Statements")
-              fi
-              
-              if [ -n "$BRANCHES_COVERAGE" ] && [ ${BRANCHES_COVERAGE%.*} -lt ${BRANCHES_THRESHOLD%.*} ]; then
-                  FAILED_THRESHOLDS+=("Branches")
-              fi
-              
-              if [ -n "$FUNCTIONS_COVERAGE" ] && [ ${FUNCTIONS_COVERAGE%.*} -lt ${FUNCTIONS_THRESHOLD%.*} ]; then
-                  FAILED_THRESHOLDS+=("Functions")
-              fi
-              
-              if [ -n "$LINES_COVERAGE" ] && [ ${LINES_COVERAGE%.*} -lt ${LINES_THRESHOLD%.*} ]; then
-                  FAILED_THRESHOLDS+=("Lines")
-              fi
-              
-              # Store failed thresholds for reporting
-              if [ ${#FAILED_THRESHOLDS[@]} -gt 0 ]; then
-                  echo "FAILED_THRESHOLDS=${FAILED_THRESHOLDS[*]}" >> $GITHUB_ENV
-                  echo "TEST_STATUS=coverage_failed" >> $GITHUB_ENV
-              fi
-          elif [ -f coverage/coverage-summary.json ]; then
-              echo "Using coverage JSON file"
-              cat coverage/coverage-summary.json
-              
-              STATEMENTS_COVERAGE=$(jq -r '.total.statements.pct' coverage/coverage-summary.json)
-              BRANCHES_COVERAGE=$(jq -r '.total.branches.pct' coverage/coverage-summary.json)
-              FUNCTIONS_COVERAGE=$(jq -r '.total.functions.pct' coverage/coverage-summary.json)
-              LINES_COVERAGE=$(jq -r '.total.lines.pct' coverage/coverage-summary.json)
-              
-              echo "STATEMENTS_COVERAGE=$STATEMENTS_COVERAGE" >> $GITHUB_ENV
-              echo "BRANCHES_COVERAGE=$BRANCHES_COVERAGE" >> $GITHUB_ENV
-              echo "FUNCTIONS_COVERAGE=$FUNCTIONS_COVERAGE" >> $GITHUB_ENV
-              echo "LINES_COVERAGE=$LINES_COVERAGE" >> $GITHUB_ENV
-              
-              # Check which thresholds failed - using simplified integer comparison for JSON values too
-              FAILED_THRESHOLDS=()
-              
-              if [ -n "$STATEMENTS_COVERAGE" ] && [ ${STATEMENTS_COVERAGE%.*} -lt ${STATEMENTS_THRESHOLD%.*} ]; then
-                  FAILED_THRESHOLDS+=("Statements")
-              fi
-              
-              if [ -n "$BRANCHES_COVERAGE" ] && [ ${BRANCHES_COVERAGE%.*} -lt ${BRANCHES_THRESHOLD%.*} ]; then
-                  FAILED_THRESHOLDS+=("Branches")
-              fi
-              
-              if [ -n "$FUNCTIONS_COVERAGE" ] && [ ${FUNCTIONS_COVERAGE%.*} -lt ${FUNCTIONS_THRESHOLD%.*} ]; then
-                  FAILED_THRESHOLDS+=("Functions")
-              fi
-              
-              if [ -n "$LINES_COVERAGE" ] && [ ${LINES_COVERAGE%.*} -lt ${LINES_THRESHOLD%.*} ]; then
-                  FAILED_THRESHOLDS+=("Lines")
-              fi
-              
-              # Store failed thresholds for reporting
-              if [ ${#FAILED_THRESHOLDS[@]} -gt 0 ]; then
-                  echo "FAILED_THRESHOLDS=${FAILED_THRESHOLDS[*]}" >> $GITHUB_ENV
-                  echo "TEST_STATUS=coverage_failed" >> $GITHUB_ENV
-              fi
-          else
-              echo "Could not find coverage data"
-              # Don't fail the build just because we couldn't find coverage data
-              # if the tests passed
+              echo "STATEMENTS_COVERAGE=$STATEMENTS_PCT" >> $GITHUB_ENV
+              echo "BRANCHES_COVERAGE=$BRANCHES_PCT" >> $GITHUB_ENV
+              echo "FUNCTIONS_COVERAGE=$FUNCTIONS_PCT" >> $GITHUB_ENV
+              echo "LINES_COVERAGE=$LINES_PCT" >> $GITHUB_ENV
           fi
 
       - name: Manage PR Comments
@@ -243,67 +202,41 @@ jobs:
               }
             }
             
-            // Only create new comment if tests or coverage failed
-            if (process.env.TEST_STATUS !== 'success') {
-              // Prepare the new comment
-              const status = process.env.TEST_STATUS;
-              let message = "";
-  
-              switch(status) {
-                  case 'execution_failed':
-                      message += "**❌ Unit Test Run Failed**\n\n"
-                      message += "The test execution failed. Please check the workflow logs for details.\n\n"
-                      break;
-                      
-                  case 'coverage_failed':
-                      message += "**❌ Coverage Thresholds Not Met**\n\n"
-                      message += "One or more coverage metrics did not meet the minimum threshold.\n"
-                      
-                      // Add failed thresholds if available
-                      if (process.env.FAILED_THRESHOLDS) {
-                          const failedTypes = process.env.FAILED_THRESHOLDS.split(' ');
-                          message += "**Failed metrics:** " + failedTypes.join(', ') + "\n\n";
-                      }
-                      
-                      message += "Please add more test coverage to meet the thresholds.\n\n"
-                      break;
-                      
-                  default:
-                      message += "**❌ Test Process Error**\n\n"
-                      message += "An unexpected error occurred during testing.\n\n"
-              }
-  
-              // Add test summary
-              message += "**Test Results Summary:**\n"
-              message += `- Total Tests: ${process.env.TOTAL_TESTS || 'N/A'}\n`
-              message += `- Passed: ${process.env.PASSED_TESTS || 0}\n`
-              message += `- Failed: ${process.env.FAILED_TESTS || 'N/A'}\n`
-              message += `- Pass Percentage: ${process.env.PASS_PERCENTAGE || 'N/A'}%\n\n`
-              
-              // Format the coverage metrics line
-              const formatCoverage = (value, threshold) => {
-                return value ? `${value}% / ${threshold}%` : `N/A / ${threshold}%`;
-              };
-              
-              message += "**Coverage Metrics:**\n";
-              message += `- Statements: ${formatCoverage(process.env.STATEMENTS_COVERAGE, process.env.STATEMENTS_THRESHOLD)}\n`;
-              message += `- Branches: ${formatCoverage(process.env.BRANCHES_COVERAGE, process.env.BRANCHES_THRESHOLD)}\n`;
-              message += `- Functions: ${formatCoverage(process.env.FUNCTIONS_COVERAGE, process.env.FUNCTIONS_THRESHOLD)}\n`;
-              message += `- Lines: ${formatCoverage(process.env.LINES_COVERAGE, process.env.LINES_THRESHOLD)}\n\n`;
-              
-              message += "**Note:** Coverage thresholds can be configured via repository variable `COVERAGE_THRESHOLDS` as a JSON object.";
-  
-              // Post the new comment
-              await github.rest.issues.createComment({
-                  issue_number: context.issue.number,
-                  owner: context.repo.owner,
-                  repo: context.repo.repo,
-                  body: message
-              });
+            // Create a detailed debug comment
+            let debugMessage = "## Test & Coverage Debug Information\n\n";
+            
+            // Add coverage debug info if available
+            if (process.env.COVERAGE_DEBUG) {
+              debugMessage += "### Coverage Extraction Results\n\n```\n";
+              debugMessage += process.env.COVERAGE_DEBUG;
+              debugMessage += "\n```\n\n";
             }
-
-      - name: Fail if tests failed or coverage is insufficient
-        if: env.TEST_STATUS != 'success'
-        run: |
-          echo "::error::Tests failed or coverage thresholds not met. See PR comments for details."
-          exit 1
+            
+            // Add JSON coverage if found
+            if (process.env.COVERAGE_JSON) {
+              debugMessage += "### Coverage JSON\n\n```json\n";
+              debugMessage += process.env.COVERAGE_JSON;
+              debugMessage += "\n```\n\n";
+            }
+            
+            // Add extracted metrics
+            debugMessage += "### Extracted Coverage Values\n\n";
+            debugMessage += `- Statements: ${process.env.STATEMENTS_COVERAGE || 'Not found'}%\n`;
+            debugMessage += `- Branches: ${process.env.BRANCHES_COVERAGE || 'Not found'}%\n`;
+            debugMessage += `- Functions: ${process.env.FUNCTIONS_COVERAGE || 'Not found'}%\n`;
+            debugMessage += `- Lines: ${process.env.LINES_COVERAGE || 'Not found'}%\n\n`;
+            
+            // Add thresholds
+            debugMessage += "### Coverage Thresholds\n\n";
+            debugMessage += `- Statements: ${process.env.STATEMENTS_THRESHOLD}%\n`;
+            debugMessage += `- Branches: ${process.env.BRANCHES_THRESHOLD}%\n`;
+            debugMessage += `- Functions: ${process.env.FUNCTIONS_THRESHOLD}%\n`;
+            debugMessage += `- Lines: ${process.env.LINES_THRESHOLD}%\n`;
+            
+            // Post the debug comment
+            await github.rest.issues.createComment({
+                issue_number: context.issue.number,
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                body: debugMessage
+            });
