@@ -8,15 +8,12 @@ import { DomSanitizer } from '@angular/platform-browser';
   styleUrls: ['app.component.scss'],
   standalone: false,
 })
-export class AppComponent implements OnDestroy {
+export class AppComponent {
   varun!: string;
   hello!: string;
   subscription: any; // For testing 'any' type issue
 
   constructor(private sanitizer: DomSanitizer) {}
-
-
-
   // Example of 'any' type issue
   someMethodWithAny(value: any) {
     console.log(value);
