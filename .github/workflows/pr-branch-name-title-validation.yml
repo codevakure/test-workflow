@@ -1,0 +1,263 @@
+name: Branch and PR Title Check
+
+# ---------------------------------------------------------------------------------------
+# WORKFLOW CONFIGURATION
+# ---------------------------------------------------------------------------------------
+# This workflow enforces branch naming conventions and PR title standards, and prevents
+# duplicate branches for the same story/task.
+#
+# CONFIGURABLE VARIABLES (can be set as GitHub repository variables):
+# 
+# EXCEPTION_BRANCHES - JSON array of branch names/prefixes exempt from validation
+#   Format: ["branch1", "prefix/", "etc"]
+#   Default: ["develop", "test", "main", "test/", "develop/", "hotfix/"]
+#   Example: To add 'release' branches, set to: ["develop", "test", "main", "test/", "develop/", "hotfix/", "release/"]
+#
+# VALID_PREFIXES - JSON array of valid prefixes for branch names and PR titles
+#   Format: ["prefix1", "prefix2", "etc"]
+#   Default: ["feature", "sprint", "us", "hotfix", "bug"]
+#   Example: To add 'chore' prefix, set to: ["feature", "sprint", "us", "hotfix", "bug", "chore"]
+#
+# HOW TO SET VARIABLES:
+# 1. Go to your repository Settings
+# 2. Navigate to Secrets and Variables > Variables
+# 3. Click "New repository variable"
+# 4. Create variables with names above and JSON array values
+# ---------------------------------------------------------------------------------------
+
+on:
+    pull_request:
+        types: [opened, edited]
+
+permissions:
+    pull-requests: write
+    contents: read
+    issues: write
+    statuses: write
+
+jobs:
+    check-branch-and-pr-title:
+        runs-on: ubuntu-latest
+        env:
+            BRANCH_VALID: "false"
+            PR_TITLE_VALID: "false"
+            DUPLICATE_CHECK_VALID: "false"
+            EXCEPTION_BRANCHES: ${{ vars.EXCEPTION_BRANCHES || '["develop", "test", "main", "test/", "develop/", "hotfix/"]' }}
+            VALID_PREFIXES: ${{ vars.VALID_PREFIXES || '["feature", "sprint", "us", "hotfix", "bug"]' }}
+
+        steps:
+            - name: Check out the repository
+              uses: actions/checkout@v3
+
+            - name: Validate branch name
+              id: validate-branch
+              run: |
+                  # Parse JSON arrays from environment variables
+                  EXCEPTION_BRANCHES=($(echo $EXCEPTION_BRANCHES | jq -r '.[]'))
+                  VALID_PREFIXES=($(echo $VALID_PREFIXES | jq -r '.[]'))
+                  
+                  BRANCH_NAME="${{ github.event.pull_request.head.ref }}"
+                  BRANCH_NAME_LOWER=$(echo "$BRANCH_NAME" | tr '[:upper:]' '[:lower:]')
+                  PREFIX_MATCHES=false
+                  
+                  for EXCEPTION in "${EXCEPTION_BRANCHES[@]}"; do
+                      if [[ "$BRANCH_NAME" == "$EXCEPTION"* ]]; then
+                          echo "BRANCH_VALID=true" >> $GITHUB_ENV
+                          echo "Branch name '$BRANCH_NAME' is an exception and is valid."
+                          exit 0
+                      fi
+                  done
+                  
+                  for PREFIX in "${VALID_PREFIXES[@]}"; do
+                      PREFIX_LOWER=$(echo "$PREFIX" | tr '[:upper:]' '[:lower:]')
+                      if [[ "$BRANCH_NAME_LOWER" =~ ^"$PREFIX_LOWER"-ab#[0-9]+-[a-z0-9][a-z0-9-]*$ ]]; then
+                          PREFIX_MATCHES=true
+                          break
+                      fi
+                  done
+                  
+                  if [ "$PREFIX_MATCHES" = true ]; then
+                      echo "BRANCH_VALID=true" >> $GITHUB_ENV
+                      echo "Branch name '$BRANCH_NAME' is valid."
+                  else
+                      echo "BRANCH_VALID=false" >> $GITHUB_ENV
+                      echo "::error::Invalid branch name. Check PR comments for details."
+                  fi
+
+            - name: Validate PR title
+              id: validate-pr-title
+              run: |
+                  # Parse JSON arrays from environment variables
+                  EXCEPTION_PREFIXES=($(echo $EXCEPTION_BRANCHES | jq -r '.[]'))
+                  VALID_PREFIXES=($(echo $VALID_PREFIXES | jq -r '.[]'))
+                  
+                  PR_TITLE="${{ github.event.pull_request.title }}"
+                  PR_TITLE_LOWER=$(echo "$PR_TITLE" | tr '[:upper:]' '[:lower:]')
+                  PREFIX_MATCHES=false
+                  
+                  for EXCEPTION in "${EXCEPTION_PREFIXES[@]}"; do
+                      if [[ "$PR_TITLE" == "$EXCEPTION"* ]]; then
+                          echo "PR_TITLE_VALID=true" >> $GITHUB_ENV
+                          echo "PR title '$PR_TITLE' is an exception and is valid."
+                          exit 0
+                      fi
+                  done
+                  
+                  for PREFIX in "${VALID_PREFIXES[@]}"; do
+                      PREFIX_LOWER=$(echo "$PREFIX" | tr '[:upper:]' '[:lower:]')
+                      
+                      if [[ "$PR_TITLE_LOWER" =~ ^$PREFIX_LOWER[-[:space:]]ab#[0-9]+.+ ]]; then
+                          PREFIX_MATCHES=true
+                          break
+                      fi
+                  done
+                  
+                  if [ "$PREFIX_MATCHES" = true ]; then
+                      echo "PR_TITLE_VALID=true" >> $GITHUB_ENV
+                      echo "PR title '$PR_TITLE' is valid."
+                  else
+                      echo "PR_TITLE_VALID=false" >> $GITHUB_ENV
+                      echo "::error::Invalid PR title. Check PR comments for details."
+                  fi
+            
+            - name: Check for duplicate branches with same story
+              id: check-duplicates
+              uses: actions/github-script@v6
+              if: env.BRANCH_VALID == 'true'
+              env:
+                  EXCEPTION_BRANCHES: ${{ env.EXCEPTION_BRANCHES }}
+              with:
+                  github-token: ${{ github.token }}
+                  script: |
+                    const currentBranch = context.payload.pull_request.head.ref.toLowerCase();
+                    const exceptionBranches = JSON.parse(process.env.EXCEPTION_BRANCHES);
+                    
+                    // Check if it's an exception branch
+                    for (const exceptionPrefix of exceptionBranches) {
+                      if (currentBranch.startsWith(exceptionPrefix.toLowerCase())) {
+                        console.log('Exception branch detected, skipping duplicate check');
+                        core.setOutput('duplicate_check_valid', 'true');
+                        return;
+                      }
+                    }
+                    
+                    try {
+                      // Extract board ID from branch name
+                      const boardIdMatch = currentBranch.match(/(?<=#)\d+(?=-)/);
+                      const boardId = boardIdMatch ? boardIdMatch[0] : '';
+                      
+                      if (!boardId) {
+                        console.log('No board ID found in branch name, skipping duplicate check');
+                        core.setOutput('duplicate_check_valid', 'true');
+                        return;
+                      }
+                      
+                      console.log(`Extracted board ID: ${boardId}`);
+                      
+                      // Check for duplicate branches
+                      const { data: matchingRefs } = await github.rest.git.listMatchingRefs({
+                        owner: context.repo.owner,
+                        repo: context.repo.repo,
+                        ref: 'heads/'
+                      });
+                      
+                      const duplicateBranches = matchingRefs
+                        .map(ref => ref.ref.replace('refs/heads/', ''))
+                        .filter(branchName => {
+                          if (branchName.toLowerCase() === currentBranch) return false;
+                          const branchBoardId = branchName.toLowerCase().match(/(?<=#)\d+(?=-)/);
+                          return branchBoardId && branchBoardId[0] === boardId;
+                        });
+                      
+                      console.log('Found matching branches:', duplicateBranches);
+                      
+                      if (duplicateBranches.length > 0) {
+                        // Create a comment for duplicate branches
+                        await github.rest.issues.createComment({
+                          issue_number: context.issue.number,
+                          owner: context.repo.owner,
+                          repo: context.repo.repo,
+                          body: `**❌ Duplicate Story Branch**\n\nFound existing branches for story #${boardId}:\n${duplicateBranches.map(b => `- ${b}`).join('\n')}\n\nPlease take one of these actions:\n\n1. To add new functionality to the existing branch:\n   - Close this PR\n   - Git checkout ${duplicateBranches[0]}\n   - Git pull origin ${duplicateBranches[0]}\n   - Add your new changes on top\n   - Push your changes\n   - This keeps all related work in one PR\n\n2. If the existing branch work is complete:\n   - First close/merge the existing PR\n   - Then you can create a new PR for additional functionality\n\nThis helps maintain clean Git history and keeps related changes together.`
+                        });
+                        
+                        core.setFailed('Duplicate branches found');
+                        core.setOutput('duplicate_check_valid', 'false');
+                        process.env.DUPLICATE_CHECK_VALID = 'false';
+                      } else {
+                        console.log('No duplicate branches found');
+                        core.setOutput('duplicate_check_valid', 'true');
+                        process.env.DUPLICATE_CHECK_VALID = 'true';
+                      }
+                    } catch (error) {
+                      console.error('Error checking for duplicate branches:', error);
+                      core.setFailed(`Error checking for duplicate branches: ${error.message}`);
+                      process.env.DUPLICATE_CHECK_VALID = 'false';
+                    }
+
+            # This step always runs to clean up old comments
+            - name: Delete Previous Validation Comments
+              uses: actions/github-script@v6
+              with:
+                  github-token: ${{ github.token }}
+                  script: |
+                    const { data: comments } = await github.rest.issues.listComments({
+                      owner: context.repo.owner,
+                      repo: context.repo.repo,
+                      issue_number: context.issue.number
+                    });
+                    
+                    for (const comment of comments) {
+                      if ((comment.body.includes('Validation Failed') || 
+                           comment.body.includes('Duplicate Story Branch')) &&
+                          comment.user.login === 'github-actions[bot]') {
+                        try {
+                          await github.rest.issues.deleteComment({
+                            owner: context.repo.owner,
+                            repo: context.repo.repo,
+                            comment_id: comment.id
+                          });
+                        } catch (error) {
+                          console.error(`Error deleting comment ${comment.id}:`, error);
+                        }
+                      }
+                    }
+
+            # This step only runs when validation fails
+            - name: Create Validation Failure Comment
+              if: env.BRANCH_VALID == 'false' || env.PR_TITLE_VALID == 'false'
+              uses: actions/github-script@v6
+              env:
+                  BRANCH_NAME: ${{ github.event.pull_request.head.ref }}
+                  PR_TITLE: ${{ github.event.pull_request.title }}
+              with:
+                  github-token: ${{ github.token }}
+                  script: |
+                    let message = "";
+                    
+                    if (process.env.BRANCH_VALID === 'false') {
+                      message += `**❌ Branch Name Validation Failed: ${process.env.BRANCH_NAME}**\n\n`;
+                    }
+                    
+                    if (process.env.PR_TITLE_VALID === 'false') {
+                      message += `**❌ PR Title Validation Failed: ${process.env.PR_TITLE}**\n\n`;
+                    }
+                    message += "**Review PR Guidelines**\n";
+                    message += "<a href='www.example.com' target='_blank'>PR creation guidelines</a>";
+                    
+                    await github.rest.issues.createComment({
+                      issue_number: context.issue.number,
+                      owner: context.repo.owner,
+                      repo: context.repo.repo,
+                      body: message
+                    });
+
+            - name: Block PR if validation failed
+              id: block-pr
+              if: env.BRANCH_VALID == 'false' || env.PR_TITLE_VALID == 'false' || env.DUPLICATE_CHECK_VALID == 'false'
+              run: |
+                  if [ "$BRANCH_VALID" == "false" ] || [ "$PR_TITLE_VALID" == "false" ]; then
+                    echo "::error::Validation failed. Please fix the branch name and/or PR title according to the guidelines in the PR comments."
+                  elif [ "$DUPLICATE_CHECK_VALID" == "false" ]; then
+                    echo "::error::Duplicate story branch detected. Please check the PR comments for details."
+                  fi
+                  exit 1
