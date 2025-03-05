@@ -120,7 +120,54 @@ jobs:
           fi
           
           # Extract coverage data
-          if grep -q "Coverage summary" test-output.txt; then
+          if grep -q "Code Coverage Summary:" test-output.txt; then
+              echo "Found Code Coverage Summary"
+              
+              # Extract coverage metrics using grep and awk
+              STATEMENTS_COVERAGE=$(grep "Code Coverage Summary:" test-output.txt -A 6 | awk '/Statements/ {print $3}' | sed 's/%//')
+              BRANCHES_COVERAGE=$(grep "Code Coverage Summary:" test-output.txt -A 6 | awk '/Branches/ {print $3}' | sed 's/%//')
+              FUNCTIONS_COVERAGE=$(grep "Code Coverage Summary:" test-output.txt -A 6 | awk '/Functions/ {print $3}' | sed 's/%//')
+              LINES_COVERAGE=$(grep "Code Coverage Summary:" test-output.txt -A 6 | awk '/Lines/ {print $3}' | sed 's/%//')
+              
+              echo "Statements coverage: $STATEMENTS_COVERAGE%"
+              echo "Branches coverage: $BRANCHES_COVERAGE%"
+              echo "Functions coverage: $FUNCTIONS_COVERAGE%"
+              echo "Lines coverage: $LINES_COVERAGE%"
+              
+              echo "STATEMENTS_COVERAGE=$STATEMENTS_COVERAGE" >> $GITHUB_ENV
+              echo "BRANCHES_COVERAGE=$BRANCHES_COVERAGE" >> $GITHUB_ENV
+              echo "FUNCTIONS_COVERAGE=$FUNCTIONS_COVERAGE" >> $GITHUB_ENV
+              echo "LINES_COVERAGE=$LINES_COVERAGE" >> $GITHUB_ENV
+              
+              # Check which thresholds failed
+              FAILED_THRESHOLDS=()
+              
+              if [ -n "$STATEMENTS_COVERAGE" ] && (( $(echo "$STATEMENTS_COVERAGE < $STATEMENTS_THRESHOLD" | bc -l) )); then
+                  echo "Statements coverage ($STATEMENTS_COVERAGE%) is below threshold ($STATEMENTS_THRESHOLD%)"
+                  FAILED_THRESHOLDS+=("Statements")
+              fi
+              
+              if [ -n "$BRANCHES_COVERAGE" ] && (( $(echo "$BRANCHES_COVERAGE < $BRANCHES_THRESHOLD" | bc -l) )); then
+                  echo "Branches coverage ($BRANCHES_COVERAGE%) is below threshold ($BRANCHES_THRESHOLD%)"
+                  FAILED_THRESHOLDS+=("Branches")
+              fi
+              
+              if [ -n "$FUNCTIONS_COVERAGE" ] && (( $(echo "$FUNCTIONS_COVERAGE < $FUNCTIONS_THRESHOLD" | bc -l) )); then
+                  echo "Functions coverage ($FUNCTIONS_COVERAGE%) is below threshold ($FUNCTIONS_THRESHOLD%)"
+                  FAILED_THRESHOLDS+=("Functions")
+              fi
+              
+              if [ -n "$LINES_COVERAGE" ] && (( $(echo "$LINES_COVERAGE < $LINES_THRESHOLD" | bc -l) )); then
+                  echo "Lines coverage ($LINES_COVERAGE%) is below threshold ($LINES_THRESHOLD%)"
+                  FAILED_THRESHOLDS+=("Lines")
+              fi
+              
+              # Store failed thresholds for reporting
+              if [ ${#FAILED_THRESHOLDS[@]} -gt 0 ]; then
+                  echo "FAILED_THRESHOLDS=${FAILED_THRESHOLDS[*]}" >> $GITHUB_ENV
+                  echo "TEST_STATUS=coverage_failed" >> $GITHUB_ENV
+              fi
+          elif grep -q "Coverage summary" test-output.txt; then
               echo "Found coverage summary"
               
               # Create a stripped version of the file for easier parsing
