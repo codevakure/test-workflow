@@ -182,17 +182,28 @@ jobs:
                         
                         core.setFailed('Duplicate branches found');
                         core.setOutput('duplicate_check_valid', 'false');
-                        process.env.DUPLICATE_CHECK_VALID = 'false';
                       } else {
                         console.log('No duplicate branches found');
                         core.setOutput('duplicate_check_valid', 'true');
-                        process.env.DUPLICATE_CHECK_VALID = 'true';
                       }
                     } catch (error) {
                       console.error('Error checking for duplicate branches:', error);
                       core.setFailed(`Error checking for duplicate branches: ${error.message}`);
-                      process.env.DUPLICATE_CHECK_VALID = 'false';
+                      core.setOutput('duplicate_check_valid', 'false');
                     }
+
+            # Set environment variable from output for subsequent steps
+            - name: Set duplicate check environment variable
+              if: always()
+              run: |
+                if [ "${{ steps.check-duplicates.outputs.duplicate_check_valid }}" == "false" ]; then
+                  echo "DUPLICATE_CHECK_VALID=false" >> $GITHUB_ENV
+                elif [ "${{ steps.check-duplicates.outputs.duplicate_check_valid }}" == "true" ]; then
+                  echo "DUPLICATE_CHECK_VALID=true" >> $GITHUB_ENV
+                else
+                  # Default to true if step was skipped or output not set
+                  echo "DUPLICATE_CHECK_VALID=true" >> $GITHUB_ENV
+                fi
 
             # This step always runs to clean up old comments
             - name: Delete Previous Validation Comments
