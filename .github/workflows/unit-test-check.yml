@@ -81,17 +81,6 @@ jobs:
               echo "TEST_STATUS=execution_failed" >> $GITHUB_ENV
           fi
 
-          # Find test metrics
-          echo "Looking for test metrics..."
-          grep -n "TOTAL" test-output.txt || echo "No TOTAL line found"
-          grep -n "Executed" test-output.txt || echo "No Executed line found"
-          
-          # Set default metrics
-          echo "TOTAL_TESTS=0" >> $GITHUB_ENV
-          echo "PASSED_TESTS=0" >> $GITHUB_ENV
-          echo "FAILED_TESTS=0" >> $GITHUB_ENV
-          echo "PASS_PERCENTAGE=0" >> $GITHUB_ENV
-
           # Simple coverage extraction
           if grep -q "Coverage summary" test-output.txt; then
               echo "Found Coverage summary"
@@ -219,7 +208,8 @@ jobs:
             // Delete existing unit test comments
             for (const comment of comments) {
               if ((comment.body.includes('Unit Test') || 
-                  comment.body.includes('Test Results Summary')) &&
+                  comment.body.includes('Test Results Summary') ||
+                  comment.body.includes('Coverage Metrics')) &&
                   comment.user.login === 'github-actions[bot]') {
                 try {
                   await github.rest.issues.deleteComment({
@@ -247,41 +237,31 @@ jobs:
                       
                   case 'coverage_failed':
                       message += "**❌ Coverage Thresholds Not Met**\n\n"
-                      message += "One or more coverage metrics did not meet the minimum threshold.\n"
-                      
-                      // Add failed thresholds if available
-                      if (process.env.FAILED_THRESHOLDS) {
-                          const failedTypes = process.env.FAILED_THRESHOLDS.split(' ');
-                          message += "**Failed metrics:** " + failedTypes.join(', ') + "\n\n";
-                      }
-                      
-                      message += "Please add more test coverage to meet the thresholds.\n\n"
+                      message += "One or more coverage metrics did not meet the minimum threshold.\n\n"
                       break;
                       
                   default:
                       message += "**❌ Test Process Error**\n\n"
                       message += "An unexpected error occurred during testing.\n\n"
               }
-  
-              // Add test summary
-              message += "**Test Results Summary:**\n"
-              message += `- Total Tests: ${process.env.TOTAL_TESTS || 'N/A'}\n`
-              message += `- Passed: ${process.env.PASSED_TESTS || 0}\n`
-              message += `- Failed: ${process.env.FAILED_TESTS || 'N/A'}\n`
-              message += `- Pass Percentage: ${process.env.PASS_PERCENTAGE || 'N/A'}%\n\n`
               
               // Format the coverage metrics line
               const formatCoverage = (value, threshold) => {
                 return value ? `${value}% / ${threshold}%` : `N/A / ${threshold}%`;
               };
               
+              // Add coverage metrics
               message += "**Coverage Metrics:**\n";
               message += `- Statements: ${formatCoverage(process.env.STATEMENTS_COVERAGE, process.env.STATEMENTS_THRESHOLD)}\n`;
               message += `- Branches: ${formatCoverage(process.env.BRANCHES_COVERAGE, process.env.BRANCHES_THRESHOLD)}\n`;
               message += `- Functions: ${formatCoverage(process.env.FUNCTIONS_COVERAGE, process.env.FUNCTIONS_THRESHOLD)}\n`;
               message += `- Lines: ${formatCoverage(process.env.LINES_COVERAGE, process.env.LINES_THRESHOLD)}\n\n`;
               
-              message += "**Note:** Coverage thresholds can be configured via repository variable `COVERAGE_THRESHOLDS` as a JSON object.";
+              // Add failed thresholds if available
+              if (process.env.FAILED_THRESHOLDS && status === 'coverage_failed') {
+                  const failedTypes = process.env.FAILED_THRESHOLDS.split(' ');
+                  message += "**Failed metrics:** " + failedTypes.join(', ') + "\n";
+              }
   
               // Post the new comment
               await github.rest.issues.createComment({
