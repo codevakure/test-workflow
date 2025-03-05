@@ -1,4 +1,4 @@
-name: Unit Test Check
+name: UI Unit Test Validation
 
 on:
   pull_request:
@@ -16,7 +16,8 @@ jobs:
     runs-on: ubuntu-latest
 
     env:
-      MIN_COVERAGE: ${{ vars.COVERAGE_THRESHOLD || 80 }}
+      # Default coverage thresholds - will be overridden if COVERAGE_THRESHOLDS variable is set
+      DEFAULT_COVERAGE_THRESHOLDS: '{"statements":80,"branches":80,"functions":80,"lines":80}'
 
     steps:
       - name: Check out the repository
@@ -40,101 +41,282 @@ jobs:
       - name: Install dependencies
         run: npm install
 
+      - name: Parse coverage thresholds
+        id: parse-thresholds
+        run: |
+          # Get thresholds from repo variable or use default
+          COVERAGE_THRESHOLDS='${{ vars.COVERAGE_THRESHOLDS || env.DEFAULT_COVERAGE_THRESHOLDS }}'
+          echo "Using coverage thresholds: $COVERAGE_THRESHOLDS"
+          
+          # Extract individual thresholds and set as environment variables
+          STATEMENTS_THRESHOLD=$(echo $COVERAGE_THRESHOLDS | jq -r '.statements // 80')
+          BRANCHES_THRESHOLD=$(echo $COVERAGE_THRESHOLDS | jq -r '.branches // 80')
+          FUNCTIONS_THRESHOLD=$(echo $COVERAGE_THRESHOLDS | jq -r '.functions // 80')
+          LINES_THRESHOLD=$(echo $COVERAGE_THRESHOLDS | jq -r '.lines // 80')
+          
+          echo "STATEMENTS_THRESHOLD=$STATEMENTS_THRESHOLD" >> $GITHUB_ENV
+          echo "BRANCHES_THRESHOLD=$BRANCHES_THRESHOLD" >> $GITHUB_ENV
+          echo "FUNCTIONS_THRESHOLD=$FUNCTIONS_THRESHOLD" >> $GITHUB_ENV
+          echo "LINES_THRESHOLD=$LINES_THRESHOLD" >> $GITHUB_ENV
+          echo "COVERAGE_THRESHOLDS=$COVERAGE_THRESHOLDS" >> $GITHUB_ENV
+
       - name: Run tests with coverage
         id: test
         continue-on-error: true
         run: |
-          if ng test --no-watch --code-coverage --browsers=ChromeHeadless > test-output.txt 2>&1; then
+          # Run tests and capture all output
+          ng test --no-watch --code-coverage --browsers=ChromeHeadless > test-output.txt 2>&1
+          TEST_EXIT_CODE=$?
+          
+          # Debug output
+          echo "Test exit code: $TEST_EXIT_CODE"
+          echo "Test output:"
+          cat test-output.txt
+          
+          # Set initial test status based on exit code
+          if [ $TEST_EXIT_CODE -eq 0 ]; then
               echo "TEST_STATUS=success" >> $GITHUB_ENV
           else
               echo "TEST_STATUS=execution_failed" >> $GITHUB_ENV
           fi
 
-          # Parse test results
-          if [ -f test-output.txt ] && grep -q "Executed.*" test-output.txt; then
-              TEST_OUTPUT=$(grep -o 'Executed.*' test-output.txt | tail -1)
-              TOTAL=$(echo "$TEST_OUTPUT" | cut -d' ' -f2)
-              FAILED=$(echo "$TEST_OUTPUT" | grep -o '[0-9]* failed' | cut -d' ' -f1 || echo "0")
-              PASSED=$((TOTAL - FAILED))
-              PASS_PERCENTAGE=$(awk "BEGIN { print ($PASSED/$TOTAL) * 100 }")
+          # Parse test results regardless of exit code
+          if [ -f test-output.txt ]; then
+              # Extract test execution results
+              if grep -q "Executed.*SUCCESS" test-output.txt; then
+                  TEST_OUTPUT=$(grep -o 'Executed.*SUCCESS' test-output.txt | tail -1)
+                  TOTAL=$(echo "$TEST_OUTPUT" | cut -d' ' -f2)
+                  FAILED=0
+                  PASSED=$TOTAL
+                  PASS_PERCENTAGE=100
+              elif grep -q "Executed.*FAILURE" test-output.txt; then
+                  TEST_OUTPUT=$(grep -o 'Executed.*FAILURE' test-output.txt | tail -1)
+                  TOTAL=$(echo "$TEST_OUTPUT" | cut -d' ' -f2)
+                  FAILED=$(grep -o '[0-9]* FAILED' test-output.txt | head -1 | cut -d' ' -f1 || echo "0")
+                  PASSED=$((TOTAL - FAILED))
+                  PASS_PERCENTAGE=$(awk "BEGIN { print ($PASSED/$TOTAL) * 100 }")
+              elif grep -q "TOTAL:.*SUCCESS" test-output.txt; then
+                  TEST_OUTPUT=$(grep -o 'TOTAL:.*SUCCESS' test-output.txt | tail -1)
+                  TOTAL=$(echo "$TEST_OUTPUT" | cut -d' ' -f2)
+                  FAILED=0
+                  PASSED=$TOTAL
+                  PASS_PERCENTAGE=100
+              else
+                  # Cannot determine test results
+                  TOTAL=0
+                  FAILED=0
+                  PASSED=0
+                  PASS_PERCENTAGE=0
+                  echo "TEST_STATUS=execution_failed" >> $GITHUB_ENV
+              fi
               
               echo "TOTAL_TESTS=$TOTAL" >> $GITHUB_ENV
               echo "PASSED_TESTS=$PASSED" >> $GITHUB_ENV
               echo "FAILED_TESTS=$FAILED" >> $GITHUB_ENV
               echo "PASS_PERCENTAGE=$PASS_PERCENTAGE" >> $GITHUB_ENV
               
-              if [ -f coverage/coverage-summary.json ]; then
-                  COVERAGE=$(jq -r '.total.lines.pct' coverage/coverage-summary.json)
-                  echo "COVERAGE=$COVERAGE" >> $GITHUB_ENV
-                  if (( $(echo "$COVERAGE < $MIN_COVERAGE" | bc -l) )); then
+              # Check if all tests passed, then check coverage
+              if [ "$FAILED" -eq "0" ] && [ "$TEST_STATUS" != "execution_failed" ]; then
+                  # Extract coverage from output
+                  if grep -q "Coverage summary" test-output.txt; then
+                      # Initialize failed thresholds array
+                      FAILED_THRESHOLDS=()
+                      
+                      # Extract coverage metrics from the output
+                      STATEMENTS_COVERAGE=$(grep -A 4 "Coverage summary" test-output.txt | grep "Statements" | grep -o '[0-9.]*%' | sed 's/%//')
+                      BRANCHES_COVERAGE=$(grep -A 4 "Coverage summary" test-output.txt | grep "Branches" | grep -o '[0-9.]*%' | sed 's/%//')
+                      FUNCTIONS_COVERAGE=$(grep -A 4 "Coverage summary" test-output.txt | grep "Functions" | grep -o '[0-9.]*%' | sed 's/%//')
+                      LINES_COVERAGE=$(grep -A 4 "Coverage summary" test-output.txt | grep "Lines" | grep -o '[0-9.]*%' | sed 's/%//')
+                      
+                      echo "Extracted coverage metrics:"
+                      echo "Statements: $STATEMENTS_COVERAGE%"
+                      echo "Branches: $BRANCHES_COVERAGE%"
+                      echo "Functions: $FUNCTIONS_COVERAGE%"
+                      echo "Lines: $LINES_COVERAGE%"
+                      
+                      # Store coverage metrics as environment variables
+                      echo "STATEMENTS_COVERAGE=$STATEMENTS_COVERAGE" >> $GITHUB_ENV
+                      echo "BRANCHES_COVERAGE=$BRANCHES_COVERAGE" >> $GITHUB_ENV
+                      echo "FUNCTIONS_COVERAGE=$FUNCTIONS_COVERAGE" >> $GITHUB_ENV
+                      echo "LINES_COVERAGE=$LINES_COVERAGE" >> $GITHUB_ENV
+                      
+                      # Check each coverage metric against its threshold
+                      if (( $(echo "$STATEMENTS_COVERAGE < $STATEMENTS_THRESHOLD" | bc -l) )); then
+                          echo "Statements coverage ($STATEMENTS_COVERAGE%) is below threshold ($STATEMENTS_THRESHOLD%)"
+                          FAILED_THRESHOLDS+=("Statements")
+                      fi
+                      
+                      if (( $(echo "$BRANCHES_COVERAGE < $BRANCHES_THRESHOLD" | bc -l) )); then
+                          echo "Branches coverage ($BRANCHES_COVERAGE%) is below threshold ($BRANCHES_THRESHOLD%)"
+                          FAILED_THRESHOLDS+=("Branches")
+                      fi
+                      
+                      if (( $(echo "$FUNCTIONS_COVERAGE < $FUNCTIONS_THRESHOLD" | bc -l) )); then
+                          echo "Functions coverage ($FUNCTIONS_COVERAGE%) is below threshold ($FUNCTIONS_THRESHOLD%)"
+                          FAILED_THRESHOLDS+=("Functions")
+                      fi
+                      
+                      if (( $(echo "$LINES_COVERAGE < $LINES_THRESHOLD" | bc -l) )); then
+                          echo "Lines coverage ($LINES_COVERAGE%) is below threshold ($LINES_THRESHOLD%)"
+                          FAILED_THRESHOLDS+=("Lines")
+                      fi
+                      
+                      # Store failed thresholds for reporting
+                      if [ ${#FAILED_THRESHOLDS[@]} -gt 0 ]; then
+                          echo "FAILED_THRESHOLDS=${FAILED_THRESHOLDS[*]}" >> $GITHUB_ENV
+                          echo "TEST_STATUS=coverage_failed" >> $GITHUB_ENV
+                      fi
+                      
+                  elif [ -f coverage/coverage-summary.json ]; then
+                      # Extract from JSON file if available
+                      STATEMENTS_COVERAGE=$(jq -r '.total.statements.pct' coverage/coverage-summary.json)
+                      BRANCHES_COVERAGE=$(jq -r '.total.branches.pct' coverage/coverage-summary.json)
+                      FUNCTIONS_COVERAGE=$(jq -r '.total.functions.pct' coverage/coverage-summary.json)
+                      LINES_COVERAGE=$(jq -r '.total.lines.pct' coverage/coverage-summary.json)
+                      
+                      echo "Extracted coverage from JSON:"
+                      echo "Statements: $STATEMENTS_COVERAGE%"
+                      echo "Branches: $BRANCHES_COVERAGE%"
+                      echo "Functions: $FUNCTIONS_COVERAGE%"
+                      echo "Lines: $LINES_COVERAGE%"
+                      
+                      # Store coverage metrics as environment variables
+                      echo "STATEMENTS_COVERAGE=$STATEMENTS_COVERAGE" >> $GITHUB_ENV
+                      echo "BRANCHES_COVERAGE=$BRANCHES_COVERAGE" >> $GITHUB_ENV
+                      echo "FUNCTIONS_COVERAGE=$FUNCTIONS_COVERAGE" >> $GITHUB_ENV
+                      echo "LINES_COVERAGE=$LINES_COVERAGE" >> $GITHUB_ENV
+                      
+                      # Check each coverage metric against its threshold
+                      FAILED_THRESHOLDS=()
+                      
+                      if (( $(echo "$STATEMENTS_COVERAGE < $STATEMENTS_THRESHOLD" | bc -l) )); then
+                          FAILED_THRESHOLDS+=("Statements")
+                      fi
+                      
+                      if (( $(echo "$BRANCHES_COVERAGE < $BRANCHES_THRESHOLD" | bc -l) )); then
+                          FAILED_THRESHOLDS+=("Branches")
+                      fi
+                      
+                      if (( $(echo "$FUNCTIONS_COVERAGE < $FUNCTIONS_THRESHOLD" | bc -l) )); then
+                          FAILED_THRESHOLDS+=("Functions")
+                      fi
+                      
+                      if (( $(echo "$LINES_COVERAGE < $LINES_THRESHOLD" | bc -l) )); then
+                          FAILED_THRESHOLDS+=("Lines")
+                      fi
+                      
+                      # Store failed thresholds for reporting
+                      if [ ${#FAILED_THRESHOLDS[@]} -gt 0 ]; then
+                          echo "FAILED_THRESHOLDS=${FAILED_THRESHOLDS[*]}" >> $GITHUB_ENV
+                          echo "TEST_STATUS=coverage_failed" >> $GITHUB_ENV
+                      fi
+                  else
+                      echo "Could not determine coverage"
                       echo "TEST_STATUS=coverage_failed" >> $GITHUB_ENV
                   fi
               fi
+          else
+              echo "Test output file not found"
+              echo "TEST_STATUS=execution_failed" >> $GITHUB_ENV
           fi
 
-      - name: Comment test results
-        if: env.TEST_STATUS != 'success'
+      - name: Manage PR Comments
         uses: actions/github-script@v6
         with:
           github-token: ${{ github.token }}
           script: |
             // First, get all existing comments
-            const comments = await github.rest.issues.listComments({
+            const { data: comments } = await github.rest.issues.listComments({
               owner: context.repo.owner,
               repo: context.repo.repo,
               issue_number: context.issue.number
             });
             
-            // Find and delete the existing unit test comment
-            for (const comment of comments.data) {
-              if (comment.body.includes('Unit Test') || 
-                  comment.body.includes('Test Results Summary')) {
-                await github.rest.issues.deleteComment({
-                  owner: context.repo.owner,
-                  repo: context.repo.repo,
-                  comment_id: comment.id
-                });
-                break; // Delete only the first matching comment
+            // Delete existing unit test comments
+            for (const comment of comments) {
+              if ((comment.body.includes('Unit Test') || 
+                  comment.body.includes('Test Results Summary')) &&
+                  comment.user.login === 'github-actions[bot]') {
+                try {
+                  await github.rest.issues.deleteComment({
+                    owner: context.repo.owner,
+                    repo: context.repo.repo,
+                    comment_id: comment.id
+                  });
+                } catch (error) {
+                  console.error(`Error deleting comment ${comment.id}:`, error);
+                }
               }
             }
             
-            // Prepare the new comment
-            const status = process.env.TEST_STATUS;
-            let message = "";
-
-            switch(status) {
-                case 'execution_failed':
-                    message += "**❌ Unit Test Run Failed**\n\n"
-                    message += "The test execution failed. Please check the workflow logs for details.\n\n"
-                    break;
-                    
-                case 'coverage_failed':
-                    message += "**❌ Coverage Threshold Not Met**\n\n"
-                    message += "Please add more test coverage to meet the threshold.\n\n"
-                    break;
-                    
-                default:
-                    message += "**❌ Test Process Error**\n\n"
-                    message += "An unexpected error occurred during testing.\n\n"
+            // Only create new comment if tests or coverage failed
+            if (process.env.TEST_STATUS !== 'success') {
+              // Prepare the new comment
+              const status = process.env.TEST_STATUS;
+              let message = "";
+  
+              switch(status) {
+                  case 'execution_failed':
+                      message += "**❌ Unit Test Run Failed**\n\n"
+                      message += "The test execution failed. Please check the workflow logs for details.\n\n"
+                      break;
+                      
+                  case 'coverage_failed':
+                      message += "**❌ Coverage Thresholds Not Met**\n\n"
+                      message += "One or more coverage metrics did not meet the minimum threshold.\n"
+                      
+                      // Add failed thresholds if available
+                      if (process.env.FAILED_THRESHOLDS) {
+                          const failedTypes = process.env.FAILED_THRESHOLDS.split(' ');
+                          message += "**Failed metrics:** " + failedTypes.join(', ') + "\n\n";
+                      }
+                      
+                      message += "Please add more test coverage to meet the thresholds.\n\n"
+                      break;
+                      
+                  default:
+                      message += "**❌ Test Process Error**\n\n"
+                      message += "An unexpected error occurred during testing.\n\n"
+              }
+  
+              // Add test summary
+              message += "**Test Results Summary:**\n"
+              message += `- Total Tests: ${process.env.TOTAL_TESTS || 'N/A'}\n`
+              message += `- Passed: ${process.env.PASSED_TESTS || 0}\n`
+              message += `- Failed: ${process.env.FAILED_TESTS || 'N/A'}\n`
+              message += `- Pass Percentage: ${process.env.PASS_PERCENTAGE || 'N/A'}%\n\n`
+              
+              // Add coverage metrics
+              message += "**Coverage Metrics:**\n"
+              
+              // Helper function to format coverage display
+              const formatCoverage = (actual, threshold) => {
+                if (!actual) return 'N/A';
+                const passed = parseFloat(actual) >= parseFloat(threshold);
+                return `${actual}% ${passed ? '✅' : '❌'} (Threshold: ${threshold}%)`;
+              };
+              
+              message += `- Statements: ${formatCoverage(process.env.STATEMENTS_COVERAGE, process.env.STATEMENTS_THRESHOLD)}\n`
+              message += `- Branches: ${formatCoverage(process.env.BRANCHES_COVERAGE, process.env.BRANCHES_THRESHOLD)}\n`
+              message += `- Functions: ${formatCoverage(process.env.FUNCTIONS_COVERAGE, process.env.FUNCTIONS_THRESHOLD)}\n`
+              message += `- Lines: ${formatCoverage(process.env.LINES_COVERAGE, process.env.LINES_THRESHOLD)}\n\n`
+              
+              message += "To configure coverage thresholds, set the `COVERAGE_THRESHOLDS` repository variable with a JSON object:\n";
+              message += "```json\n";
+              message += JSON.stringify(JSON.parse(process.env.COVERAGE_THRESHOLDS), null, 2);
+              message += "\n```";
+  
+              // Post the new comment
+              await github.rest.issues.createComment({
+                  issue_number: context.issue.number,
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  body: message
+              });
             }
-
-            // Add test summary
-            message += "**Test Results Summary:**\n"
-            message += `- Total Tests: ${process.env.TOTAL_TESTS || 'N/A'}\n`
-            message += `- Passed: ${process.env.PASSED_TESTS || 0}\n`
-            message += `- Failed: ${process.env.FAILED_TESTS || 'N/A'}\n`
-            message += `- Pass Percentage: ${process.env.PASS_PERCENTAGE || 'N/A'}%\n`
-            message += `- Code Coverage: ${process.env.COVERAGE || 'N/A'}%\n`
-            message += `- Required Threshold: ${process.env.MIN_COVERAGE}%\n`
-
-            // Post the new comment
-            await github.rest.issues.createComment({
-                issue_number: context.issue.number,
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                body: message
-            });
 
       - name: Fail if tests failed or coverage is insufficient
         if: env.TEST_STATUS != 'success'
-        run: exit 1
+        run: |
+          echo "::error::Tests failed or coverage thresholds not met. See PR comments for details."
+          exit 1
