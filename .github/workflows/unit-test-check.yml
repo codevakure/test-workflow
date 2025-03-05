@@ -120,29 +120,30 @@ jobs:
           fi
           
           # Debug coverage extraction
-          echo "Checking if coverage data exists:"
-          grep -q "Code Coverage Summary:" test-output.txt
-          echo "Grep result: $?"
+          echo "Searching for Coverage summary section:"
+          grep -n "Coverage summary" test-output.txt || echo "No coverage summary found"
           
-          echo "Coverage section context:"
-          grep -A 10 "Code Coverage Summary:" test-output.txt || echo "No coverage section found"
-          
-          # Extract coverage data using more robust pattern matching
-          if grep -q "Code Coverage Summary:" test-output.txt; then
-              echo "Found Code Coverage Summary"
+          # Extract coverage data - using the correct format from your output
+          if grep -q "Coverage summary" test-output.txt; then
+              echo "Found Coverage summary"
               
-              # Extract using reliable pattern matching
-              STATEMENTS_COVERAGE=$(grep -A 1 "Code Coverage Summary:" test-output.txt | grep "Statements" | sed -E 's/.*Statements.*: ([0-9.]+)%.*/\1/')
-              BRANCHES_COVERAGE=$(grep -A 2 "Code Coverage Summary:" test-output.txt | grep "Branches" | sed -E 's/.*Branches.*: ([0-9.]+)%.*/\1/')
-              FUNCTIONS_COVERAGE=$(grep -A 3 "Code Coverage Summary:" test-output.txt | grep "Functions" | sed -E 's/.*Functions.*: ([0-9.]+)%.*/\1/')
-              LINES_COVERAGE=$(grep -A 4 "Code Coverage Summary:" test-output.txt | grep "Lines" | sed -E 's/.*Lines.*: ([0-9.]+)%.*/\1/')
+              # Create a clean version without color codes and special characters
+              cat test-output.txt | tr -d '\r' | sed 's/\x1b\[[0-9;]*m//g' > coverage-clean.txt
               
+              # Extract the actual coverage values using specific patterns
+              STATEMENTS_COVERAGE=$(grep -A 1 "Coverage summary" coverage-clean.txt | grep "Statements" | sed -E 's/Statements[^:]*:[ ]*([0-9.]+)%.*/\1/')
+              BRANCHES_COVERAGE=$(grep -A 2 "Coverage summary" coverage-clean.txt | grep "Branches" | sed -E 's/Branches[^:]*:[ ]*([0-9.]+)%.*/\1/')
+              FUNCTIONS_COVERAGE=$(grep -A 3 "Coverage summary" coverage-clean.txt | grep "Functions" | sed -E 's/Functions[^:]*:[ ]*([0-9.]+)%.*/\1/')
+              LINES_COVERAGE=$(grep -A 4 "Coverage summary" coverage-clean.txt | grep "Lines" | sed -E 's/Lines[^:]*:[ ]*([0-9.]+)%.*/\1/')
+              
+              # Show debug output
               echo "Extracted coverage values:"
               echo "Statements coverage: $STATEMENTS_COVERAGE%"
               echo "Branches coverage: $BRANCHES_COVERAGE%"
               echo "Functions coverage: $FUNCTIONS_COVERAGE%"
               echo "Lines coverage: $LINES_COVERAGE%"
               
+              # Save to environment variables
               echo "STATEMENTS_COVERAGE=$STATEMENTS_COVERAGE" >> $GITHUB_ENV
               echo "BRANCHES_COVERAGE=$BRANCHES_COVERAGE" >> $GITHUB_ENV
               echo "FUNCTIONS_COVERAGE=$FUNCTIONS_COVERAGE" >> $GITHUB_ENV
