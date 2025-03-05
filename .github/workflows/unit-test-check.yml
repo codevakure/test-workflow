@@ -119,16 +119,25 @@ jobs:
               echo "PASS_PERCENTAGE=0" >> $GITHUB_ENV
           fi
           
-          # Extract coverage data
+          # Debug coverage extraction
+          echo "Checking if coverage data exists:"
+          grep -q "Code Coverage Summary:" test-output.txt
+          echo "Grep result: $?"
+          
+          echo "Coverage section context:"
+          grep -A 10 "Code Coverage Summary:" test-output.txt || echo "No coverage section found"
+          
+          # Extract coverage data using more robust pattern matching
           if grep -q "Code Coverage Summary:" test-output.txt; then
               echo "Found Code Coverage Summary"
               
-              # Extract coverage metrics using grep and awk
-              STATEMENTS_COVERAGE=$(grep "Code Coverage Summary:" test-output.txt -A 6 | awk '/Statements/ {print $3}' | sed 's/%//')
-              BRANCHES_COVERAGE=$(grep "Code Coverage Summary:" test-output.txt -A 6 | awk '/Branches/ {print $3}' | sed 's/%//')
-              FUNCTIONS_COVERAGE=$(grep "Code Coverage Summary:" test-output.txt -A 6 | awk '/Functions/ {print $3}' | sed 's/%//')
-              LINES_COVERAGE=$(grep "Code Coverage Summary:" test-output.txt -A 6 | awk '/Lines/ {print $3}' | sed 's/%//')
+              # Extract using reliable pattern matching
+              STATEMENTS_COVERAGE=$(grep -A 1 "Code Coverage Summary:" test-output.txt | grep "Statements" | sed -E 's/.*Statements.*: ([0-9.]+)%.*/\1/')
+              BRANCHES_COVERAGE=$(grep -A 2 "Code Coverage Summary:" test-output.txt | grep "Branches" | sed -E 's/.*Branches.*: ([0-9.]+)%.*/\1/')
+              FUNCTIONS_COVERAGE=$(grep -A 3 "Code Coverage Summary:" test-output.txt | grep "Functions" | sed -E 's/.*Functions.*: ([0-9.]+)%.*/\1/')
+              LINES_COVERAGE=$(grep -A 4 "Code Coverage Summary:" test-output.txt | grep "Lines" | sed -E 's/.*Lines.*: ([0-9.]+)%.*/\1/')
               
+              echo "Extracted coverage values:"
               echo "Statements coverage: $STATEMENTS_COVERAGE%"
               echo "Branches coverage: $BRANCHES_COVERAGE%"
               echo "Functions coverage: $FUNCTIONS_COVERAGE%"
@@ -138,82 +147,6 @@ jobs:
               echo "BRANCHES_COVERAGE=$BRANCHES_COVERAGE" >> $GITHUB_ENV
               echo "FUNCTIONS_COVERAGE=$FUNCTIONS_COVERAGE" >> $GITHUB_ENV
               echo "LINES_COVERAGE=$LINES_COVERAGE" >> $GITHUB_ENV
-              
-              # Check which thresholds failed
-              FAILED_THRESHOLDS=()
-              
-              if [ -n "$STATEMENTS_COVERAGE" ] && (( $(echo "$STATEMENTS_COVERAGE < $STATEMENTS_THRESHOLD" | bc -l) )); then
-                  echo "Statements coverage ($STATEMENTS_COVERAGE%) is below threshold ($STATEMENTS_THRESHOLD%)"
-                  FAILED_THRESHOLDS+=("Statements")
-              fi
-              
-              if [ -n "$BRANCHES_COVERAGE" ] && (( $(echo "$BRANCHES_COVERAGE < $BRANCHES_THRESHOLD" | bc -l) )); then
-                  echo "Branches coverage ($BRANCHES_COVERAGE%) is below threshold ($BRANCHES_THRESHOLD%)"
-                  FAILED_THRESHOLDS+=("Branches")
-              fi
-              
-              if [ -n "$FUNCTIONS_COVERAGE" ] && (( $(echo "$FUNCTIONS_COVERAGE < $FUNCTIONS_THRESHOLD" | bc -l) )); then
-                  echo "Functions coverage ($FUNCTIONS_COVERAGE%) is below threshold ($FUNCTIONS_THRESHOLD%)"
-                  FAILED_THRESHOLDS+=("Functions")
-              fi
-              
-              if [ -n "$LINES_COVERAGE" ] && (( $(echo "$LINES_COVERAGE < $LINES_THRESHOLD" | bc -l) )); then
-                  echo "Lines coverage ($LINES_COVERAGE%) is below threshold ($LINES_THRESHOLD%)"
-                  FAILED_THRESHOLDS+=("Lines")
-              fi
-              
-              # Store failed thresholds for reporting
-              if [ ${#FAILED_THRESHOLDS[@]} -gt 0 ]; then
-                  echo "FAILED_THRESHOLDS=${FAILED_THRESHOLDS[*]}" >> $GITHUB_ENV
-                  echo "TEST_STATUS=coverage_failed" >> $GITHUB_ENV
-              fi
-          elif grep -q "Coverage summary" test-output.txt; then
-              echo "Found coverage summary"
-              
-              # Create a stripped version of the file for easier parsing
-              cat test-output.txt | tr -d '\r' | sed 's/\x1b\[[0-9;]*m//g' > coverage-clean.txt
-              
-              # Extract coverage data using direct pattern matching
-              COVERAGE_SECTION=$(sed -n '/Coverage summary/,/===/p' coverage-clean.txt)
-              echo "Coverage section extracted:"
-              echo "$COVERAGE_SECTION"
-              
-              # Extract each coverage metric using grep and awk
-              STATEMENTS_LINE=$(echo "$COVERAGE_SECTION" | grep "Statements")
-              BRANCHES_LINE=$(echo "$COVERAGE_SECTION" | grep "Branches")
-              FUNCTIONS_LINE=$(echo "$COVERAGE_SECTION" | grep "Functions")
-              LINES_LINE=$(echo "$COVERAGE_SECTION" | grep "Lines")
-              
-              echo "Extracted lines:"
-              echo "Statements: $STATEMENTS_LINE"
-              echo "Branches: $BRANCHES_LINE"
-              echo "Functions: $FUNCTIONS_LINE"
-              echo "Lines: $LINES_LINE"
-              
-              # Use awk to extract percentages - more reliable than regex
-              if [ -n "$STATEMENTS_LINE" ]; then
-                  STATEMENTS_COVERAGE=$(echo "$STATEMENTS_LINE" | awk '{print $3}' | sed 's/%//')
-                  echo "Statements coverage: $STATEMENTS_COVERAGE%"
-                  echo "STATEMENTS_COVERAGE=$STATEMENTS_COVERAGE" >> $GITHUB_ENV
-              fi
-              
-              if [ -n "$BRANCHES_LINE" ]; then
-                  BRANCHES_COVERAGE=$(echo "$BRANCHES_LINE" | awk '{print $3}' | sed 's/%//')
-                  echo "Branches coverage: $BRANCHES_COVERAGE%"
-                  echo "BRANCHES_COVERAGE=$BRANCHES_COVERAGE" >> $GITHUB_ENV
-              fi
-              
-              if [ -n "$FUNCTIONS_LINE" ]; then
-                  FUNCTIONS_COVERAGE=$(echo "$FUNCTIONS_LINE" | awk '{print $3}' | sed 's/%//')
-                  echo "Functions coverage: $FUNCTIONS_COVERAGE%"
-                  echo "FUNCTIONS_COVERAGE=$FUNCTIONS_COVERAGE" >> $GITHUB_ENV
-              fi
-              
-              if [ -n "$LINES_LINE" ]; then
-                  LINES_COVERAGE=$(echo "$LINES_LINE" | awk '{print $3}' | sed 's/%//')
-                  echo "Lines coverage: $LINES_COVERAGE%"
-                  echo "LINES_COVERAGE=$LINES_COVERAGE" >> $GITHUB_ENV
-              fi
               
               # Check which thresholds failed
               FAILED_THRESHOLDS=()
